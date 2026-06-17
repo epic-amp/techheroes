@@ -33,6 +33,15 @@ export const api = {
   getToken,
   logout: () => setToken(null),
 
+  setup: {
+    status: () => request("/setup/status", { auth: false }),
+    create: async (name, email, password) => {
+      const data = await request("/setup", { method: "POST", auth: false, body: { name, email, password } });
+      setToken(data.token);
+      return data;
+    },
+  },
+
   login: {
     student: async (studentId, password) => {
       const data = await request("/auth/login/student", { method: "POST", auth: false, body: { studentId, password } });
@@ -46,6 +55,7 @@ export const api = {
     },
   },
   me: () => request("/auth/me"),
+  updateProfile: (b) => request("/auth/me", { method: "PUT", body: b }),
 
   students: {
     list: (params = {}) => request(`/students${qs(params)}`),
@@ -89,6 +99,7 @@ export const api = {
     markRead: (id) => request(`/notifications/${id}/read`, { method: "PATCH" }),
     markAllRead: () => request("/notifications/read-all", { method: "PATCH" }),
   },
+  contacts: () => request("/contacts"),
 };
 
 function qs(params) {
