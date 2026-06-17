@@ -1,20 +1,1216 @@
-import React, { useState, useMemo, useRef, useEffect } from "react";
+import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
-  LayoutDashboard, Users, UsersRound, FolderKanban, ClipboardList, BookOpen,
-  MessageSquare, GraduationCap, BarChart3, Settings, Search, Plus, Pencil,
-  Trash2, X, Bell, Sun, Moon, Globe, LogOut, Send, Paperclip, Download,
-  Upload, CheckCircle2, Clock, AlertTriangle, FileText, Image as ImageIcon,
-  ChevronRight, Menu, Award, TrendingUp, Pin, CircleUserRound, Star,
-  Calendar, Filter, ShieldCheck, Sparkles, ArrowUpRight
+  LayoutDashboard, Users, FolderKanban, ClipboardList, BookOpen, MessageSquare,
+  GraduationCap, BarChart3, Settings, Search, Plus, Pencil, Trash2, X, Bell,
+  Sun, Moon, Globe, LogOut, Send, Paperclip, Download, Upload, CheckCircle2,
+  Clock, AlertTriangle, FileText, Image as ImageIcon, ChevronRight, Menu, Award,
+  TrendingUp, Pin, CircleUserRound, Star, Calendar, Filter, ShieldCheck, Sparkles,
+  ArrowUpRight, Loader2, LogIn, UserPlus, Inbox, Link2
 } from "lucide-react";
 import {
-  LineChart, Line, BarChart, Bar, AreaChart, Area, PieChart, Pie, Cell,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, RadialBarChart, RadialBar
+  BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, RadialBarChart, RadialBar
 } from "recharts";
+import { api } from "./lib/api";
 
-/* ============================== i18n ============================== */
+/* ============================== atoms ============================== */
+const cx = (...a) => a.filter(Boolean).join(" ");
+
+function Badge({ kind, children }) {
+  return <span className={cx("th-badge", kind && `th-badge--${kind}`)}>{children}</span>;
+}
+function Avatar({ name = "?", size = 36 }) {
+  const initials = name.trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase() || "?";
+  return <span className="th-avatar" style={{ width: size, height: size, fontSize: size * 0.38 }}>{initials}</span>;
+}
+function Modal({ open, onClose, title, children, footer }) {
+  if (!open) return null;
+  return (
+    <div className="th-modal-scrim" onClick={onClose}>
+      <div className="th-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="th-modal__head"><h3>{title}</h3>
+          <button className="th-iconbtn" onClick={onClose} aria-label="Close"><X size={18} /></button></div>
+        <div className="th-modal__body">{children}</div>
+        {footer && <div className="th-modal__foot">{footer}</div>}
+      </div>
+    </div>
+  );
+}
+function Field({ label, children }) {
+  return <label className="th-field"><span className="th-field__label">{label}</span>{children}</label>;
+}
+function Donut({ value }) {
+  const data = [{ name: "v", value, fill: "var(--brand)" }];
+  return (
+    <ResponsiveContainer width="100%" height={120}>
+      <RadialBarChart innerRadius="70%" outerRadius="100%" data={data} startAngle={90} endAngle={-270}>
+        <RadialBar background={{ fill: "var(--line)" }} dataKey="value" cornerRadius={20} />
+      </RadialBarChart>
+    </ResponsiveContainer>
+  );
+}
+function Brandmark({ t, compact }) {
+  return (
+    <div className={cx("th-brand", compact && "th-brand--compact")}>
+      <span className="th-brand__mark"><GraduationCap size={20} /><i className="th-brand__spark" /></span>
+      {!compact && <span className="th-brand__text">{t.brand}</span>}
+    </div>
+  );
+}
+function PageHead({ title, subtitle, action }) {
+  return (
+    <div className="th-pagehead">
+      <div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
+      {action}
+    </div>
+  );
+}
+function Card({ children, className }) { return <div className={cx("th-card", className)}>{children}</div>; }
+function Toggle({ label, on, onClick }) {
+  return (
+    <button className="th-toggle" onClick={onClick}>
+      <span>{label}</span>
+      <span className={cx("th-switch", on && "is-on")}><i /></span>
+    </button>
+  );
+}
+function Spinner({ label }) {
+  return <div className="th-loading"><Loader2 className="th-spin" size={22} />{label && <span>{label}</span>}</div>;
+}
+function EmptyState({ icon: Icon = Inbox, title, hint }) {
+  return (
+    <div className="th-emptybox">
+      <span className="th-emptybox__ic"><Icon size={22} /></span>
+      <strong>{title}</strong>{hint && <span>{hint}</span>}
+    </div>
+  );
+}
+function ErrorNote({ children }) {
+  return children ? <div className="th-errnote"><AlertTriangle size={14} /> {children}</div> : null;
+}
+
+/* ============================== helpers ============================== */
+const tooltipStyle = { background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)", fontSize: 12, boxShadow: "0 8px 30px rgba(0,0,0,0.12)" };
+function statusKind(s) { return s === "graded" ? "ok" : s === "submitted" ? "brand" : s === "late" ? "warn" : "muted"; }
+function fileIcon(type) {
+  if (["Image", "PNG", "JPG"].includes(type)) return <ImageIcon size={16} />;
+  if (type === "Video") return <BookOpen size={16} />;
+  return <FileText size={16} />;
+}
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+function fmtDate(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
+}
+const groupName = (groups, id) => groups.find((g) => g.id === id)?.name || "—";
+
+/* ============================== Setup (first run) ============================== */
+function SetupScreen({ t, lang, theme, onLang, onTheme, onDone }) {
+  const [form, setForm] = useState({ name: "", email: "", password: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    setErr(""); setBusy(true);
+    try {
+      const { user } = await api.setup.create(form.name, form.email, form.password);
+      onDone(user);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="th-login">
+      <div className="th-login__topbar">
+        <Brandmark t={t} />
+        <div className="th-login__controls">
+          <button className="th-pillbtn" onClick={onLang}><Globe size={16} />{lang === "en" ? "العربية" : "English"}</button>
+          <button className="th-iconbtn th-iconbtn--ring" onClick={onTheme} aria-label="Toggle theme">
+            {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}</button>
+        </div>
+      </div>
+      <div className="th-login__grid">
+        <section className="th-hero">
+          <p className="th-eyebrow"><ShieldCheck size={14} /> {t.brand}</p>
+          <h1 className="th-hero__title">{t.setupTitle}</h1>
+          <p className="th-hero__sub">{t.setupSub}</p>
+        </section>
+        <section className="th-authcard">
+          <h2 className="th-authcard__title"><UserPlus size={18} style={{ verticalAlign: "-3px", marginInlineEnd: 8 }} />{t.createAdmin}</h2>
+          <Field label={t.fullName}><input className="th-input" value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="Jane Doe" /></Field>
+          <Field label={t.email}><input className="th-input" type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="admin@school.com" /></Field>
+          <Field label={t.password}><input className="th-input" type="password" value={form.password} onChange={(e) => set("password", e.target.value)} placeholder={t.min8} /></Field>
+          <ErrorNote>{err}</ErrorNote>
+          <button className="th-btn th-btn--primary th-btn--lg" onClick={submit} disabled={busy}>
+            {busy ? <Loader2 className="th-spin" size={18} /> : <>{t.createAccount} <ChevronRight size={18} className="th-rtl-flip" /></>}
+          </button>
+          <p className="th-fineprint">{t.setupOnce}</p>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Login ============================== */
+function Login({ t, lang, theme, onLang, onTheme, onAuthed, connError }) {
+  const [tab, setTab] = useState("student");
+  const [form, setForm] = useState({ studentId: "", email: "", password: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const submit = async () => {
+    setErr(""); setBusy(true);
+    try {
+      const data = tab === "student"
+        ? await api.login.student(form.studentId, form.password)
+        : await api.login.tutor(form.email, form.password);
+      onAuthed(data.user);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const onKey = (e) => e.key === "Enter" && submit();
+
+  return (
+    <div className="th-login">
+      <div className="th-login__topbar">
+        <Brandmark t={t} />
+        <div className="th-login__controls">
+          <button className="th-pillbtn" onClick={onLang}><Globe size={16} />{lang === "en" ? "العربية" : "English"}</button>
+          <button className="th-iconbtn th-iconbtn--ring" onClick={onTheme} aria-label="Toggle theme">
+            {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}</button>
+        </div>
+      </div>
+      <div className="th-login__grid">
+        <section className="th-hero">
+          <div className="th-hero__orbit" aria-hidden="true">
+            <span className="th-orbit th-orbit--1" /><span className="th-orbit th-orbit--2" />
+            <span className="th-spark"><Sparkles size={20} /></span>
+          </div>
+          <p className="th-eyebrow"><ShieldCheck size={14} /> {t.brand}</p>
+          <h1 className="th-hero__title">{t.tagline}</h1>
+          <p className="th-hero__sub">
+            {lang === "en"
+              ? "An organized learning environment where tutors guide, students build, and everyone grows — together."
+              : "بيئة تعلّم منظّمة يوجّه فيها المعلّمون، ويتعلّم فيها الطلاب وينمون — معًا."}
+          </p>
+        </section>
+        <section className="th-authcard">
+          <div className="th-segment">
+            {["student", "tutor"].map((k) => (
+              <button key={k} className={cx("th-segment__btn", tab === k && "is-active")}
+                onClick={() => { setTab(k); setErr(""); }}>{k === "student" ? t.student : t.tutor}</button>
+            ))}
+          </div>
+          <h2 className="th-authcard__title">{tab === "student" ? t.studentLogin : t.tutorLogin}</h2>
+
+          {tab === "student" ? (
+            <Field label={t.studentId}>
+              <input className="th-input" value={form.studentId} onChange={(e) => set("studentId", e.target.value)}
+                onKeyDown={onKey} placeholder="S-24001" autoFocus />
+            </Field>
+          ) : (
+            <Field label={t.email}>
+              <input className="th-input" type="email" value={form.email} onChange={(e) => set("email", e.target.value)}
+                onKeyDown={onKey} placeholder="you@school.com" autoFocus />
+            </Field>
+          )}
+          <Field label={t.password}>
+            <input className="th-input" type="password" value={form.password} onChange={(e) => set("password", e.target.value)} onKeyDown={onKey} />
+          </Field>
+
+          <ErrorNote>{err || (connError && t.connError)}</ErrorNote>
+          <button className="th-btn th-btn--primary th-btn--lg" onClick={submit} disabled={busy}>
+            {busy ? <Loader2 className="th-spin" size={18} /> : <><LogIn size={17} /> {t.login}</>}
+          </button>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Shell ============================== */
+function Shell({ t, lang, theme, role, user, onLang, onTheme, onLogout, children, nav, view, setView, notifs, onMarkAllRead }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [bellOpen, setBellOpen] = useState(false);
+  const unread = notifs.filter((n) => n.status === "unread").length;
+  const roleLabel = role === "tutor" ? t.tutor : t.student;
+
+  return (
+    <div className="th-shell">
+      <aside className={cx("th-sidebar", mobileOpen && "is-open")}>
+        <div className="th-sidebar__head">
+          <Brandmark t={t} />
+          <button className="th-iconbtn th-sidebar__close" onClick={() => setMobileOpen(false)}><X size={18} /></button>
+        </div>
+        <nav className="th-nav">
+          {nav.map((item) => (
+            <button key={item.key} className={cx("th-nav__item", view === item.key && "is-active")}
+              onClick={() => { setView(item.key); setMobileOpen(false); }}>
+              <item.icon size={18} /><span>{item.label}</span>
+              {view === item.key && <span className="th-nav__bar" />}
+            </button>
+          ))}
+        </nav>
+        <div className="th-sidebar__foot">
+          <div className="th-userpill">
+            <Avatar name={user?.name} size={34} />
+            <div className="th-userpill__meta"><strong>{user?.name}</strong><span>{roleLabel}</span></div>
+            <button className="th-iconbtn" onClick={onLogout} aria-label={t.signOut}><LogOut size={16} /></button>
+          </div>
+        </div>
+      </aside>
+
+      {mobileOpen && <div className="th-scrim" onClick={() => setMobileOpen(false)} />}
+
+      <div className="th-main">
+        <header className="th-topbar">
+          <button className="th-iconbtn th-topbar__menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
+          <div className="th-topbar__title">
+            <span className="th-topbar__crumb">{roleLabel}</span>
+            <ChevronRight size={14} className="th-rtl-flip th-topbar__sep" />
+            <strong>{nav.find((n) => n.key === view)?.label}</strong>
+          </div>
+          <div className="th-topbar__actions">
+            <button className="th-pillbtn" onClick={onLang}><Globe size={16} />{lang === "en" ? "ع" : "EN"}</button>
+            <button className="th-iconbtn th-iconbtn--ring" onClick={onTheme} aria-label="Toggle theme">
+              {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}</button>
+            <div className="th-bellwrap">
+              <button className="th-iconbtn th-iconbtn--ring" onClick={() => setBellOpen((o) => !o)} aria-label={t.notifications}>
+                <Bell size={18} />{unread > 0 && <span className="th-bell-dot">{unread}</span>}</button>
+              {bellOpen && (
+                <div className="th-popover" onMouseLeave={() => setBellOpen(false)}>
+                  <div className="th-popover__head"><strong>{t.notifTitle}</strong>
+                    <button className="th-link" onClick={onMarkAllRead}>{t.markAllRead}</button></div>
+                  <div className="th-popover__list">
+                    {notifs.length === 0 && <div className="th-empty">{t.noNotifs}</div>}
+                    {notifs.map((n) => (
+                      <div key={n.id} className={cx("th-notif", n.status === "unread" && "is-unread")}>
+                        <span className="th-notif__ic"><Bell size={15} /></span>
+                        <div><strong>{n.title}</strong><span>{n.message}</span></div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </header>
+        <main className="th-content">{children}</main>
+      </div>
+    </div>
+  );
+}
+
+/* ============================== Tutor: Dashboard ============================== */
+function TutorDashboard({ t, students, groups, assignments, materials, grades, submissions, loading }) {
+  const gradedVals = grades.map((g) => Number(g.grade)).filter((n) => !isNaN(n));
+  const avg = gradedVals.length ? Math.round(gradedVals.reduce((a, b) => a + b, 0) / gradedVals.length) : "—";
+  const stats = [
+    { label: t.stats.totalStudents, v: students.length, ic: Users },
+    { label: t.stats.activeGroups, v: groups.length, ic: FolderKanban },
+    { label: t.nav.assignments, v: assignments.length, ic: ClipboardList },
+    { label: t.nav.materials, v: materials.length, ic: BookOpen },
+    { label: t.stats.submittedAssignments, v: submissions.length, ic: CheckCircle2 },
+    { label: t.stats.avgGrade, v: avg, ic: Award },
+  ];
+
+  // Real grade distribution from grades.
+  const dist = [
+    { name: "A (90+)", value: gradedVals.filter((g) => g >= 90).length },
+    { name: "B (80–89)", value: gradedVals.filter((g) => g >= 80 && g < 90).length },
+    { name: "C (70–79)", value: gradedVals.filter((g) => g >= 70 && g < 80).length },
+    { name: "D (60–69)", value: gradedVals.filter((g) => g >= 60 && g < 70).length },
+    { name: "F (<60)", value: gradedVals.filter((g) => g < 60).length },
+  ];
+  const upcoming = [...assignments]
+    .filter((a) => a.deadline)
+    .sort((a, b) => new Date(a.deadline) - new Date(b.deadline))
+    .slice(0, 5);
+
+  if (loading) return (<><PageHead title={t.nav.dashboard} /><Spinner label={t.loading} /></>);
+
+  return (
+    <>
+      <PageHead title={t.nav.dashboard} subtitle={`${t.welcome}`} />
+      <div className="th-statgrid">
+        {stats.map((s) => (
+          <Card key={s.label} className="th-stat">
+            <span className="th-stat__ic"><s.ic size={20} /></span>
+            <div className="th-stat__body"><span className="th-stat__label">{s.label}</span>
+              <strong className="th-stat__value">{s.v}</strong></div>
+          </Card>
+        ))}
+      </div>
+      <div className="th-chartgrid">
+        <Card className="th-chartcard th-chartcard--wide">
+          <div className="th-chartcard__head"><h3>{t.gradeDistribution}</h3>{gradedVals.length > 0 && <Badge kind="brand">{gradedVals.length}</Badge>}</div>
+          {gradedVals.length === 0 ? (
+            <EmptyState icon={BarChart3} title={t.noDataYet} hint={t.dashHint} />
+          ) : (
+            <ResponsiveContainer width="100%" height={240}>
+              <BarChart data={dist} margin={{ left: -18, right: 8, top: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+                <XAxis dataKey="name" stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={11} />
+                <YAxis stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} allowDecimals={false} />
+                <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--brand-soft)" }} />
+                <Bar dataKey="value" radius={[8, 8, 0, 0]} fill="var(--brand)" />
+              </BarChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+        <Card className="th-chartcard">
+          <div className="th-chartcard__head"><h3>{t.deadlines}</h3></div>
+          {upcoming.length === 0 ? <EmptyState icon={Calendar} title={t.noDeadlines} /> : (
+            <ul className="th-deadlines">
+              {upcoming.map((a) => (
+                <li key={a.id}><span className="th-deadlines__cal"><Calendar size={15} /></span>
+                  <div><strong>{a.title}</strong><span>{groupName(groups, a.group_id)}</span></div>
+                  <Badge kind="muted">{fmtDate(a.deadline)}</Badge></li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
+    </>
+  );
+}
+
+/* ============================== Tutor: Students ============================== */
+function StudentsSection({ t, students, groups, reload }) {
+  const [q, setQ] = useState("");
+  const [modal, setModal] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const filtered = students.filter(
+    (s) => s.name.toLowerCase().includes(q.toLowerCase()) || (s.student_id || "").toLowerCase().includes(q.toLowerCase())
+  );
+  const blank = { name: "", student_id: "", email: "", status: "active" };
+
+  const save = async (form) => {
+    setBusy(true); setErr("");
+    try {
+      if (modal.mode === "add")
+        await api.students.create({ name: form.name, studentId: form.student_id, email: form.email, status: form.status });
+      else
+        await api.students.update(modal.data.id, { name: form.name, email: form.email, status: form.status });
+      setModal(null); await reload();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const del = async (id) => {
+    if (!window.confirm(t.confirmDelete)) return;
+    try { await api.students.remove(id); await reload(); } catch (e) { window.alert(e.message); }
+  };
+
+  return (
+    <>
+      <PageHead title={t.nav.students} subtitle={`${students.length} ${t.nav.students.toLowerCase()}`}
+        action={<button className="th-btn th-btn--primary" onClick={() => setModal({ mode: "add", data: blank })}><Plus size={16} />{t.addStudent}</button>} />
+      <Card>
+        <div className="th-toolbar">
+          <div className="th-search"><Search size={16} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t.searchStudents} /></div>
+        </div>
+        {students.length === 0 ? (
+          <EmptyState icon={Users} title={t.noStudents} hint={t.noStudentsHint} />
+        ) : (
+          <div className="th-tablewrap">
+            <table className="th-table">
+              <thead><tr><th>{t.name}</th><th>S-NUM</th><th>{t.email}</th><th>{t.status}</th><th className="th-ta-end">{t.actions}</th></tr></thead>
+              <tbody>
+                {filtered.map((s) => (
+                  <tr key={s.id}>
+                    <td><div className="th-cellname"><Avatar name={s.name} size={32} /><span>{s.name}</span></div></td>
+                    <td><span className="th-mono">{s.student_id}</span></td>
+                    <td className="th-muted">{s.email || "—"}</td>
+                    <td><Badge kind={s.status === "active" ? "ok" : "muted"}>{s.status === "active" ? t.active : t.inactive}</Badge></td>
+                    <td className="th-ta-end"><div className="th-rowactions">
+                      <button className="th-iconbtn" onClick={() => setModal({ mode: "edit", data: s })}><Pencil size={15} /></button>
+                      <button className="th-iconbtn th-iconbtn--danger" onClick={() => del(s.id)}><Trash2 size={15} /></button>
+                    </div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length === 0 && <div className="th-empty">{t.noResults}</div>}
+          </div>
+        )}
+      </Card>
+      <StudentModal t={t} modal={modal} busy={busy} err={err} onClose={() => { setModal(null); setErr(""); }} onSave={save} />
+    </>
+  );
+}
+function StudentModal({ t, modal, busy, err, onClose, onSave }) {
+  const [form, setForm] = useState(null);
+  useEffect(() => { setForm(modal?.data ? { ...modal.data } : null); }, [modal]);
+  if (!modal || !form) return null;
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  return (
+    <Modal open onClose={onClose} title={modal.mode === "add" ? t.addStudent : t.editStudent}
+      footer={<><button className="th-btn" onClick={onClose}>{t.cancel}</button>
+        <button className="th-btn th-btn--primary" onClick={() => onSave(form)} disabled={busy}>
+          {busy ? <Loader2 className="th-spin" size={16} /> : t.save}</button></>}>
+      <div className="th-formgrid">
+        <Field label={t.fullName}><input className="th-input" value={form.name} onChange={(e) => set("name", e.target.value)} /></Field>
+        <Field label="S-NUM"><input className="th-input" value={form.student_id || ""} onChange={(e) => set("student_id", e.target.value)}
+          placeholder="S-24001" disabled={modal.mode === "edit"} /></Field>
+        <Field label={t.email}><input className="th-input" value={form.email || ""} onChange={(e) => set("email", e.target.value)} /></Field>
+        <Field label={t.status}>
+          <select className="th-input" value={form.status} onChange={(e) => set("status", e.target.value)}>
+            <option value="active">{t.active}</option><option value="inactive">{t.inactive}</option>
+          </select>
+        </Field>
+      </div>
+      {modal.mode === "add" && <p className="th-fineprint">{t.defaultPwNote}</p>}
+      <ErrorNote>{err}</ErrorNote>
+    </Modal>
+  );
+}
+
+/* ============================== Tutor: Groups ============================== */
+function GroupsSection({ t, groups, students, reload }) {
+  const [modal, setModal] = useState(null);
+  const [form, setForm] = useState({ name: "", description: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const open = (g) => { setForm(g ? { name: g.name, description: g.description || "" } : { name: "", description: "" }); setErr(""); setModal(g || { mode: "add" }); };
+  const save = async () => {
+    if (!form.name.trim()) return;
+    setBusy(true); setErr("");
+    try {
+      if (modal.id) await api.groups.update(modal.id, form);
+      else await api.groups.create(form);
+      setModal(null); await reload();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const del = async (id) => { if (!window.confirm(t.confirmDeleteGroup)) return; try { await api.groups.remove(id); await reload(); } catch (e) { window.alert(e.message); } };
+  const toggleMember = async (g, userId, isMember) => {
+    try { isMember ? await api.groups.removeMember(g.id, userId) : await api.groups.addMember(g.id, userId); await reload(); }
+    catch (e) { window.alert(e.message); }
+  };
+
+  return (
+    <>
+      <PageHead title={t.nav.groups} subtitle={`${groups.length} ${t.nav.groups.toLowerCase()}`}
+        action={<button className="th-btn th-btn--primary" onClick={() => open(null)}><Plus size={16} />{t.createGroup}</button>} />
+      {groups.length === 0 ? <EmptyState icon={FolderKanban} title={t.noGroups} hint={t.noGroupsHint} /> : (
+        <div className="th-cardgrid">
+          {groups.map((g) => (
+            <Card key={g.id} className="th-groupcard">
+              <div className="th-groupcard__head">
+                <div><strong>{g.name}</strong><p>{g.description}</p></div>
+                <div className="th-rowactions">
+                  <button className="th-iconbtn" onClick={() => open(g)}><Pencil size={15} /></button>
+                  <button className="th-iconbtn th-iconbtn--danger" onClick={() => del(g.id)}><Trash2 size={15} /></button>
+                </div>
+              </div>
+              <div className="th-groupcard__meta">
+                <span><Users size={14} />{g.memberCount} {t.members.toLowerCase()}</span>
+              </div>
+              <div className="th-memberchips">
+                {(g.members || []).map((m) => (
+                  <button key={m.id} className="th-memberchip is-in" onClick={() => toggleMember(g, m.id, true)} title={t.removeMember}>
+                    {m.name} <X size={11} /></button>
+                ))}
+                {students.filter((s) => !(g.members || []).some((m) => m.id === s.id)).map((s) => (
+                  <button key={s.id} className="th-memberchip" onClick={() => toggleMember(g, s.id, false)} title={t.addMember}>
+                    <Plus size={11} /> {s.name}</button>
+                ))}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+      <Modal open={!!modal} onClose={() => setModal(null)} title={modal?.id ? t.rename : t.createGroup}
+        footer={<><button className="th-btn" onClick={() => setModal(null)}>{t.cancel}</button>
+          <button className="th-btn th-btn--primary" onClick={save} disabled={busy}>{busy ? <Loader2 className="th-spin" size={16} /> : t.save}</button></>}>
+        <Field label={t.groupName}><input className="th-input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoFocus /></Field>
+        <Field label={t.description}><input className="th-input" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
+        <ErrorNote>{err}</ErrorNote>
+      </Modal>
+    </>
+  );
+}
+
+/* ============================== Tutor: Assignments ============================== */
+function AssignmentsSection({ t, assignments, groups, reload }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ title: "", groupId: "", deadline: "", description: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const create = async () => {
+    if (!form.title.trim()) return;
+    setBusy(true); setErr("");
+    try {
+      await api.assignments.create({ title: form.title, description: form.description, deadline: form.deadline || null, groupId: form.groupId || null });
+      setForm({ title: "", groupId: "", deadline: "", description: "" }); setOpen(false); await reload();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const del = async (id) => { if (!window.confirm(t.confirmDeleteGeneric)) return; try { await api.assignments.remove(id); await reload(); } catch (e) { window.alert(e.message); } };
+
+  return (
+    <>
+      <PageHead title={t.nav.assignments}
+        action={<button className="th-btn th-btn--primary" onClick={() => setOpen(true)}><Plus size={16} />{t.createAssignment}</button>} />
+      {assignments.length === 0 ? <EmptyState icon={ClipboardList} title={t.noAssignments} hint={t.noAssignmentsHint} /> : (
+        <Card>
+          <div className="th-tablewrap">
+            <table className="th-table">
+              <thead><tr><th>{t.title}</th><th>{t.group}</th><th>{t.deadline}</th><th className="th-ta-end">{t.actions}</th></tr></thead>
+              <tbody>
+                {assignments.map((a) => (
+                  <tr key={a.id}>
+                    <td><strong>{a.title}</strong></td>
+                    <td>{a.group_id ? groupName(groups, a.group_id) : t.individual}</td>
+                    <td className="th-muted">{fmtDate(a.deadline)}</td>
+                    <td className="th-ta-end"><button className="th-iconbtn th-iconbtn--danger" onClick={() => del(a.id)}><Trash2 size={15} /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+      <Modal open={open} onClose={() => setOpen(false)} title={t.createAssignment}
+        footer={<><button className="th-btn" onClick={() => setOpen(false)}>{t.cancel}</button>
+          <button className="th-btn th-btn--primary" onClick={create} disabled={busy}>{busy ? <Loader2 className="th-spin" size={16} /> : t.create}</button></>}>
+        <div className="th-formgrid">
+          <Field label={t.title}><input className="th-input th-col-2" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
+          <Field label={t.group}>
+            <select className="th-input" value={form.groupId} onChange={(e) => setForm({ ...form, groupId: e.target.value })}>
+              <option value="">{t.individual}</option>
+              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+          </Field>
+          <Field label={t.deadline}><input className="th-input" type="date" value={form.deadline} onChange={(e) => setForm({ ...form, deadline: e.target.value })} /></Field>
+          <Field label={t.description}><textarea className="th-input th-textarea th-col-2" rows={3} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></Field>
+        </div>
+        <ErrorNote>{err}</ErrorNote>
+      </Modal>
+    </>
+  );
+}
+
+/* ============================== Tutor: Materials ============================== */
+function MaterialsSection({ t, materials, groups, reload }) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ title: "", type: "PDF", groupId: "", fileUrl: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const create = async () => {
+    if (!form.title.trim()) return;
+    setBusy(true); setErr("");
+    try {
+      await api.materials.create({ title: form.title, type: form.type, groupId: form.groupId || null, fileUrl: form.fileUrl || null });
+      setForm({ title: "", type: "PDF", groupId: "", fileUrl: "" }); setOpen(false); await reload();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  const del = async (id) => { try { await api.materials.remove(id); await reload(); } catch (e) { window.alert(e.message); } };
+
+  return (
+    <>
+      <PageHead title={t.nav.materials}
+        action={<button className="th-btn th-btn--primary" onClick={() => setOpen(true)}><Plus size={16} />{t.addMaterial}</button>} />
+      {materials.length === 0 ? <EmptyState icon={BookOpen} title={t.noMaterials} hint={t.noMaterialsHint} /> : (
+        <Card>
+          <div className="th-tablewrap">
+            <table className="th-table">
+              <thead><tr><th>{t.title}</th><th>{t.type}</th><th>{t.assignTo}</th><th className="th-ta-end">{t.actions}</th></tr></thead>
+              <tbody>
+                {materials.map((m) => (
+                  <tr key={m.id}>
+                    <td><div className="th-cellname"><span className="th-fileic">{fileIcon(m.type)}</span><strong>{m.title}</strong></div></td>
+                    <td><Badge kind="muted">{m.type}</Badge></td>
+                    <td>{m.group_id ? groupName(groups, m.group_id) : t.allGroups}</td>
+                    <td className="th-ta-end"><div className="th-rowactions">
+                      {m.file_url && <a className="th-iconbtn" href={m.file_url} target="_blank" rel="noreferrer"><Download size={15} /></a>}
+                      <button className="th-iconbtn th-iconbtn--danger" onClick={() => del(m.id)}><Trash2 size={15} /></button>
+                    </div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+      <Modal open={open} onClose={() => setOpen(false)} title={t.addMaterial}
+        footer={<><button className="th-btn" onClick={() => setOpen(false)}>{t.cancel}</button>
+          <button className="th-btn th-btn--primary" onClick={create} disabled={busy}>{busy ? <Loader2 className="th-spin" size={16} /> : t.create}</button></>}>
+        <div className="th-formgrid">
+          <Field label={t.title}><input className="th-input th-col-2" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
+          <Field label={t.type}>
+            <select className="th-input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
+              {["PDF", "PPTX", "DOCX", "XLSX", "Video", "Image", "Link"].map((x) => <option key={x}>{x}</option>)}
+            </select>
+          </Field>
+          <Field label={t.assignTo}>
+            <select className="th-input" value={form.groupId} onChange={(e) => setForm({ ...form, groupId: e.target.value })}>
+              <option value="">{t.allGroups}</option>
+              {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+            </select>
+          </Field>
+          <Field label={t.fileLink}><input className="th-input th-col-2" value={form.fileUrl} onChange={(e) => setForm({ ...form, fileUrl: e.target.value })} placeholder="https://…" /></Field>
+        </div>
+        <p className="th-fineprint">{t.blobNote}</p>
+        <ErrorNote>{err}</ErrorNote>
+      </Modal>
+    </>
+  );
+}
+
+/* ============================== Tutor: Grading (submissions) ============================== */
+function GradesSection({ t, submissions, assignments, reload }) {
+  const [edit, setEdit] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const aTitle = (id) => assignments.find((a) => a.id === id)?.title || "—";
+
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      await api.grades.grade({ submissionId: edit.id, grade: Number(edit.grade), letter: edit.letter, feedback: edit.feedback });
+      setEdit(null); await reload();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <PageHead title={t.nav.grades} subtitle={t.gradeSub} />
+      {submissions.length === 0 ? <EmptyState icon={GraduationCap} title={t.noSubmissions} hint={t.noSubmissionsHint} /> : (
+        <Card>
+          <div className="th-tablewrap">
+            <table className="th-table">
+              <thead><tr><th>{t.student}</th><th>{t.nav.assignments}</th><th>{t.status}</th><th>{t.grade}</th><th className="th-ta-end">{t.actions}</th></tr></thead>
+              <tbody>
+                {submissions.map((s) => (
+                  <tr key={s.id}>
+                    <td><div className="th-cellname"><Avatar name={s.student_name} size={30} /><span>{s.student_name}</span></div></td>
+                    <td>{aTitle(s.assignment_id)}</td>
+                    <td><Badge kind={statusKind(s.grade != null ? "graded" : s.status)}>{s.grade != null ? t.graded : t[s.status]}</Badge></td>
+                    <td>{s.grade != null ? <span className="th-gradechip"><strong>{Number(s.grade)}</strong>{s.letter && <i>{s.letter}</i>}</span> : <span className="th-muted">—</span>}</td>
+                    <td className="th-ta-end"><button className="th-btn th-btn--sm" onClick={() => setEdit({ id: s.id, grade: s.grade ?? "", letter: s.letter || "", feedback: s.feedback || "", student: s.student_name })}>
+                      <Pencil size={14} />{s.grade != null ? t.regrade : t.giveGrade}</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+      <Modal open={!!edit} onClose={() => setEdit(null)} title={t.giveGrade}
+        footer={<><button className="th-btn" onClick={() => setEdit(null)}>{t.cancel}</button>
+          <button className="th-btn th-btn--primary" onClick={save} disabled={busy}>{busy ? <Loader2 className="th-spin" size={16} /> : t.save}</button></>}>
+        {edit && <div className="th-formgrid">
+          <Field label={t.student}><input className="th-input" value={edit.student} disabled /></Field>
+          <Field label={t.grade}><input className="th-input" type="number" value={edit.grade} onChange={(e) => setEdit({ ...edit, grade: e.target.value })} /></Field>
+          <Field label={t.letter}><input className="th-input" value={edit.letter} onChange={(e) => setEdit({ ...edit, letter: e.target.value })} placeholder="A / B+ …" /></Field>
+          <Field label={t.feedback}><textarea className="th-input th-textarea th-col-2" rows={4} value={edit.feedback} onChange={(e) => setEdit({ ...edit, feedback: e.target.value })} /></Field>
+        </div>}
+        <ErrorNote>{err}</ErrorNote>
+      </Modal>
+    </>
+  );
+}
+
+/* ============================== Chat (REST + polling) ============================== */
+function ChatsSection({ t, role, user, contacts }) {
+  const [tab, setTab] = useState("personal");
+  const [active, setActive] = useState(null); // { kind:'personal'|'group', id, name }
+  const [messages, setMessages] = useState([]);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(false);
+  const endRef = useRef(null);
+
+  const people = contacts.people || [];
+  const groups = contacts.groups || [];
+  const list = tab === "personal"
+    ? people.map((p) => ({ kind: "personal", id: p.id, name: p.name }))
+    : groups.map((g) => ({ kind: "group", id: g.id, name: g.name }));
+
+  const loadThread = useCallback(async (a) => {
+    if (!a) return;
+    try {
+      const data = a.kind === "personal" ? await api.messages.personal(a.id) : await api.messages.group(a.id);
+      setMessages(data.messages || []);
+    } catch { /* keep previous */ }
+  }, []);
+
+  // Load on select + poll every 4s.
+  useEffect(() => {
+    if (!active) return;
+    setLoading(true);
+    loadThread(active).finally(() => setLoading(false));
+    const iv = setInterval(() => loadThread(active), 4000);
+    return () => clearInterval(iv);
+  }, [active, loadThread]);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+
+  const send = async () => {
+    if (!draft.trim() || !active) return;
+    const body = active.kind === "personal" ? { to: active.id, content: draft } : { groupId: active.id, content: draft };
+    setDraft("");
+    try { await api.messages.send(body); await loadThread(active); } catch (e) { window.alert(e.message); }
+  };
+
+  return (
+    <>
+      <PageHead title={t.nav.chats} />
+      <Card className="th-chatlayout">
+        <div className="th-chatlist">
+          <div className="th-segment th-segment--sm">
+            <button className={cx("th-segment__btn", tab === "personal" && "is-active")} onClick={() => { setTab("personal"); setActive(null); }}>{t.personalChat}</button>
+            <button className={cx("th-segment__btn", tab === "group" && "is-active")} onClick={() => { setTab("group"); setActive(null); }}>{t.groupChat}</button>
+          </div>
+          <div className="th-threadlist">
+            {list.length === 0 && <div className="th-empty">{t.noChats}</div>}
+            {list.map((c) => (
+              <button key={c.kind + c.id} className={cx("th-thread", active && active.id === c.id && active.kind === c.kind && "is-active")} onClick={() => setActive(c)}>
+                <Avatar name={c.name} size={38} />
+                <div className="th-thread__meta"><strong>{c.name}</strong><span>{c.kind === "group" ? t.groupChat : t.student === c.name ? "" : ""}</span></div>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="th-chatpane">
+          {!active ? <div className="th-chatempty"><MessageSquare size={26} /><span>{t.pickChat}</span></div> : (
+            <>
+              <div className="th-chatpane__head"><Avatar name={active.name} size={40} />
+                <div><strong>{active.name}</strong><span className="th-muted">{active.kind === "group" ? t.groupChat : t.personalChat}</span></div></div>
+              <div className="th-messages">
+                {loading && messages.length === 0 && <Spinner />}
+                {!loading && messages.length === 0 && <div className="th-empty">{t.noMessages}</div>}
+                {messages.map((m) => {
+                  const mine = m.sender_id === user.id;
+                  return (
+                    <div key={m.id} className={cx("th-msg", mine ? "th-msg--me" : "th-msg--them")}>
+                      {active.kind === "group" && !mine && <span className="th-msg__who">{m.sender_name}</span>}
+                      <div className="th-msg__bubble">{m.content}</div>
+                      <span className="th-msg__time">{fmtTime(m.created_at)}</span>
+                    </div>
+                  );
+                })}
+                <div ref={endRef} />
+              </div>
+              <div className="th-composer">
+                <button className="th-iconbtn"><Paperclip size={18} /></button>
+                <input className="th-composer__input" value={draft} onChange={(e) => setDraft(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && send()} placeholder={t.typeMessage} />
+                <button className="th-btn th-btn--primary th-btn--icon" onClick={send}><Send size={16} className="th-rtl-flip" /></button>
+              </div>
+            </>
+          )}
+        </div>
+      </Card>
+    </>
+  );
+}
+
+/* ============================== Tutor: Analytics ============================== */
+function AnalyticsSection({ t, grades, submissions, assignments }) {
+  // Aggregate average grade per student (real).
+  const byStudent = {};
+  grades.forEach((g) => {
+    const k = g.student_name || g.student_id;
+    if (!k) return;
+    (byStudent[k] = byStudent[k] || []).push(Number(g.grade));
+  });
+  const perStudent = Object.entries(byStudent).map(([name, arr]) => ({ name, avg: Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) }));
+  const top = [...perStudent].sort((a, b) => b.avg - a.avg).slice(0, 5);
+  const risk = perStudent.filter((s) => s.avg < 65);
+  const completion = assignments.length ? Math.round((submissions.length / assignments.length) * 100) : 0;
+
+  // Submissions over the last 7 days (real).
+  const days = [...Array(7)].map((_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (6 - i));
+    const key = d.toISOString().slice(0, 10);
+    return { d: d.toLocaleDateString([], { weekday: "short" }), key, v: 0 };
+  });
+  submissions.forEach((s) => {
+    const key = (s.submitted_at || "").slice(0, 10);
+    const day = days.find((x) => x.key === key); if (day) day.v += 1;
+  });
+  const hasSubs = submissions.length > 0;
+
+  return (
+    <>
+      <PageHead title={t.nav.analytics} subtitle={t.overview} />
+      <div className="th-chartgrid">
+        <Card className="th-chartcard th-chartcard--wide">
+          <div className="th-chartcard__head"><h3>{t.submissions7d}</h3></div>
+          {!hasSubs ? <EmptyState icon={TrendingUp} title={t.noDataYet} hint={t.analyticsHint} /> : (
+            <ResponsiveContainer width="100%" height={230}>
+              <AreaChart data={days} margin={{ left: -18, right: 8, top: 8 }}>
+                <defs><linearGradient id="eng" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--brand)" stopOpacity={0.3} /><stop offset="100%" stopColor="var(--brand)" stopOpacity={0} /></linearGradient></defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+                <XAxis dataKey="d" stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
+                <YAxis stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} allowDecimals={false} />
+                <Tooltip contentStyle={tooltipStyle} />
+                <Area type="monotone" dataKey="v" stroke="var(--brand)" strokeWidth={2.5} fill="url(#eng)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
+        </Card>
+        <Card className="th-chartcard">
+          <div className="th-chartcard__head"><h3>{t.completionRate}</h3></div>
+          <div className="th-donutwrap"><Donut value={completion} /><div className="th-donut__center"><strong>{completion}%</strong><span>{t.complete}</span></div></div>
+        </Card>
+        <Card className="th-chartcard">
+          <div className="th-chartcard__head"><h3>{t.topPerformers}</h3></div>
+          {top.length === 0 ? <EmptyState icon={Star} title={t.noDataYet} /> : (
+            <ul className="th-ranklist">
+              {top.map((s, i) => (
+                <li key={s.name}><span className="th-rank">{i + 1}</span><Avatar name={s.name} size={30} /><strong>{s.name}</strong>
+                  <span className="th-gradechip th-gradechip--sm"><Star size={12} />{s.avg}</span></li>
+              ))}
+            </ul>
+          )}
+        </Card>
+        <Card className="th-chartcard">
+          <div className="th-chartcard__head"><h3>{t.atRisk}</h3></div>
+          {risk.length === 0 ? <EmptyState icon={CheckCircle2} title={t.noneAtRisk} /> : (
+            <ul className="th-ranklist">
+              {risk.map((s) => (
+                <li key={s.name}><span className="th-rank th-rank--warn"><AlertTriangle size={13} /></span><Avatar name={s.name} size={30} />
+                  <strong>{s.name}</strong><span className="th-gradechip th-gradechip--warn">{s.avg}</span></li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
+    </>
+  );
+}
+
+/* ============================== Settings ============================== */
+function SettingsSection({ t, lang, theme, user, onLang, onTheme, onProfileSaved }) {
+  const [name, setName] = useState(user?.name || "");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+  useEffect(() => { setName(user?.name || ""); }, [user]);
+
+  const save = async () => {
+    setBusy(true); setErr(""); setMsg("");
+    try {
+      const body = { name };
+      if (password) body.password = password;
+      const { user: u } = await api.updateProfile(body);
+      setPassword(""); setMsg(t.profileUpdated); onProfileSaved && onProfileSaved(u);
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <PageHead title={t.nav.settings} />
+      <div className="th-settingsgrid">
+        <Card className="th-setblock">
+          <h3><Globe size={16} /> {t.language}</h3>
+          <div className="th-segment">
+            <button className={cx("th-segment__btn", lang === "en" && "is-active")} onClick={() => lang !== "en" && onLang()}>English</button>
+            <button className={cx("th-segment__btn", lang === "ar" && "is-active")} onClick={() => lang !== "ar" && onLang()}>العربية</button>
+          </div>
+        </Card>
+        <Card className="th-setblock">
+          <h3><Sun size={16} /> {t.appearance}</h3>
+          <div className="th-segment">
+            <button className={cx("th-segment__btn", theme === "light" && "is-active")} onClick={() => theme !== "light" && onTheme()}>{t.light}</button>
+            <button className={cx("th-segment__btn", theme === "dark" && "is-active")} onClick={() => theme !== "dark" && onTheme()}>{t.dark}</button>
+          </div>
+        </Card>
+        <Card className="th-setblock th-col-2">
+          <h3><CircleUserRound size={16} /> {t.profileMgmt}</h3>
+          <div className="th-formgrid">
+            <Field label={t.fullName}><input className="th-input" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+            <Field label={user?.role === "student" ? t.studentId : t.email}>
+              <input className="th-input" value={user?.student_id || user?.email || ""} disabled /></Field>
+            <Field label={t.newPassword}>
+              <input className="th-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={t.leaveBlankPw} /></Field>
+          </div>
+          {msg && <div className="th-okenote"><CheckCircle2 size={14} /> {msg}</div>}
+          <ErrorNote>{err}</ErrorNote>
+          <div className="th-setactions">
+            <button className="th-btn th-btn--primary" onClick={save} disabled={busy}>
+              {busy ? <Loader2 className="th-spin" size={16} /> : t.saveChanges}</button>
+          </div>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+/* ============================== Student views ============================== */
+function StudentGroups({ t, groups, loading }) {
+  if (loading) return (<><PageHead title={t.nav.myGroups} /><Spinner /></>);
+  return (
+    <>
+      <PageHead title={t.nav.myGroups} subtitle={`${groups.length} ${t.nav.groups.toLowerCase()}`} />
+      {groups.length === 0 ? <EmptyState icon={FolderKanban} title={t.noMyGroups} /> : (
+        <div className="th-cardgrid">
+          {groups.map((g) => (
+            <Card key={g.id} className="th-groupcard">
+              <div className="th-groupcard__head"><div><strong>{g.name}</strong><p>{g.description}</p></div><Badge kind="ok">{t.active}</Badge></div>
+              <div className="th-groupcard__meta"><span><Users size={14} />{g.memberCount} {t.members.toLowerCase()}</span></div>
+            </Card>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+function StudentMaterials({ t, materials, groups, loading }) {
+  if (loading) return (<><PageHead title={t.nav.myMaterials} /><Spinner /></>);
+  return (
+    <>
+      <PageHead title={t.nav.myMaterials} subtitle={`${materials.length} ${t.nav.materials.toLowerCase()}`} />
+      {materials.length === 0 ? <EmptyState icon={BookOpen} title={t.noMyMaterials} /> : (
+        <div className="th-cardgrid th-cardgrid--3">
+          {materials.map((m) => (
+            <Card key={m.id} className="th-matcard">
+              <span className="th-fileic th-fileic--lg">{fileIcon(m.type)}</span>
+              <strong>{m.title}</strong>
+              <span className="th-muted">{m.type} · {m.group_id ? groupName(groups, m.group_id) : t.allGroups}</span>
+              {m.file_url
+                ? <a className="th-btn th-btn--sm th-btn--block" href={m.file_url} target="_blank" rel="noreferrer"><Download size={14} />{t.open}</a>
+                : <span className="th-fineprint">{t.noFile}</span>}
+            </Card>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+function StudentAssignments({ t, assignments, loading, reload }) {
+  const [submit, setSubmit] = useState(null);
+  const [form, setForm] = useState({ comment: "", fileUrl: "" });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  if (loading) return (<><PageHead title={t.nav.myAssignments} /><Spinner /></>);
+
+  const doSubmit = async () => {
+    setBusy(true); setErr("");
+    try {
+      await api.submissions.create({ assignmentId: submit.id, comment: form.comment, fileUrl: form.fileUrl || null });
+      setSubmit(null); setForm({ comment: "", fileUrl: "" }); await reload();
+    } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <>
+      <PageHead title={t.nav.myAssignments} />
+      {assignments.length === 0 ? <EmptyState icon={ClipboardList} title={t.noMyAssignments} /> : (
+        <div className="th-cardgrid th-cardgrid--2">
+          {assignments.map((a) => (
+            <Card key={a.id} className="th-asgcard">
+              <div className="th-asgcard__head"><strong>{a.title}</strong><Badge kind={statusKind(a.status)}>{t[a.status] || a.status}</Badge></div>
+              <p className="th-muted">{t.deadline}: {fmtDate(a.deadline)}</p>
+              <div className="th-asgcard__foot">
+                {["submitted", "graded"].includes(a.status)
+                  ? <span className="th-muted">{t[a.status]}</span>
+                  : <button className="th-btn th-btn--primary th-btn--sm" onClick={() => setSubmit(a)}><Upload size={14} />{t.submit}</button>}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+      <Modal open={!!submit} onClose={() => setSubmit(null)} title={`${t.submit} — ${submit?.title || ""}`}
+        footer={<><button className="th-btn" onClick={() => setSubmit(null)}>{t.cancel}</button>
+          <button className="th-btn th-btn--primary" onClick={doSubmit} disabled={busy}>{busy ? <Loader2 className="th-spin" size={16} /> : t.submit}</button></>}>
+        <Field label={t.fileLink}><input className="th-input" value={form.fileUrl} onChange={(e) => setForm({ ...form, fileUrl: e.target.value })} placeholder="https://… (link to your work)" /></Field>
+        <Field label={t.comment}><textarea className="th-input th-textarea" rows={3} value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} /></Field>
+        <p className="th-fineprint">{t.blobNote}</p>
+        <ErrorNote>{err}</ErrorNote>
+      </Modal>
+    </>
+  );
+}
+function StudentGrades({ t, grades, loading }) {
+  if (loading) return (<><PageHead title={t.nav.myGrades} /><Spinner /></>);
+  return (
+    <>
+      <PageHead title={t.nav.myGrades} />
+      {grades.length === 0 ? <EmptyState icon={GraduationCap} title={t.noMyGrades} hint={t.noMyGradesHint} /> : (
+        <div className="th-cardgrid th-cardgrid--2">
+          {grades.map((g) => (
+            <Card key={g.id} className="th-gradecard">
+              <div className="th-gradecard__top"><strong>{g.assignment}</strong>
+                <span className="th-gradechip th-gradechip--lg"><strong>{Number(g.grade)}</strong>{g.letter && <i>{g.letter}</i>}</span></div>
+              {g.feedback && <p className="th-feedback"><MessageSquare size={14} /> {g.feedback}</p>}
+            </Card>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ============================== Root App ============================== */
+export default function App() {
+  const [lang, setLang] = useState("en");
+  const [theme, setTheme] = useState("light");
+  const t = T[lang];
+  const dir = t.dir;
+  const toggleLang = () => setLang((l) => (l === "en" ? "ar" : "en"));
+  const toggleTheme = () => setTheme((th) => (th === "light" ? "dark" : "light"));
+
+  const [phase, setPhase] = useState("loading"); // loading | setup | login | app
+  const [connError, setConnError] = useState(false);
+  const [user, setUser] = useState(null);
+  const [view, setView] = useState("dashboard");
+
+  // Data
+  const [students, setStudents] = useState([]);
+  const [groups, setGroups] = useState([]);
+  const [assignments, setAssignments] = useState([]);
+  const [materials, setMaterials] = useState([]);
+  const [grades, setGrades] = useState([]);
+  const [submissions, setSubmissions] = useState([]);
+  const [notifs, setNotifs] = useState([]);
+  const [contacts, setContacts] = useState({ people: [], groups: [] });
+  const [loadingData, setLoadingData] = useState(false);
+
+  const role = user?.role;
+
+  // Refreshers
+  const reloadStudents = useCallback(async () => setStudents((await api.students.list()).students), []);
+  const reloadGroups = useCallback(async () => setGroups((await api.groups.list()).groups), []);
+  const reloadAssignments = useCallback(async () => setAssignments((await api.assignments.list()).assignments), []);
+  const reloadMaterials = useCallback(async () => setMaterials((await api.materials.list()).materials), []);
+  const reloadGrades = useCallback(async () => setGrades((await api.grades.list()).grades), []);
+  const reloadSubmissions = useCallback(async () => setSubmissions((await api.submissions.list()).submissions), []);
+  const reloadNotifs = useCallback(async () => setNotifs((await api.notifications.list()).notifications), []);
+  const reloadContacts = useCallback(async () => setContacts(await api.contacts()), []);
+
+  const loadAll = useCallback(async (u) => {
+    setLoadingData(true);
+    try {
+      const jobs = [reloadGroups(), reloadAssignments(), reloadMaterials(), reloadGrades(), reloadNotifs(), reloadContacts()];
+      if (u.role === "tutor") jobs.push(reloadStudents(), reloadSubmissions());
+      await Promise.all(jobs);
+    } catch (e) { console.error(e); } finally { setLoadingData(false); }
+  }, [reloadGroups, reloadAssignments, reloadMaterials, reloadGrades, reloadNotifs, reloadContacts, reloadStudents, reloadSubmissions]);
+
+  const enter = useCallback(async (u) => {
+    setUser(u);
+    setView(u.role === "tutor" ? "dashboard" : "myGroups");
+    setPhase("app");
+    await loadAll(u);
+  }, [loadAll]);
+
+  // Boot: decide setup vs login vs resume session.
+  useEffect(() => {
+    (async () => {
+      try {
+        const { needsSetup } = await api.setup.status();
+        if (needsSetup) return setPhase("setup");
+        if (api.getToken()) {
+          try { const { user: u } = await api.me(); return enter(u); }
+          catch { api.logout(); return setPhase("login"); }
+        }
+        setPhase("login");
+      } catch { setConnError(true); setPhase("login"); }
+    })();
+  }, [enter]);
+
+  const logout = () => { api.logout(); setUser(null); setPhase("login"); };
+  const markAllRead = async () => { try { await api.notifications.markAllRead(); await reloadNotifs(); } catch (e) { console.error(e); } };
+
+  const tutorNav = [
+    { key: "dashboard", label: t.nav.dashboard, icon: LayoutDashboard },
+    { key: "students", label: t.nav.students, icon: Users },
+    { key: "groups", label: t.nav.groups, icon: FolderKanban },
+    { key: "assignments", label: t.nav.assignments, icon: ClipboardList },
+    { key: "materials", label: t.nav.materials, icon: BookOpen },
+    { key: "chats", label: t.nav.chats, icon: MessageSquare },
+    { key: "grades", label: t.nav.grades, icon: GraduationCap },
+    { key: "analytics", label: t.nav.analytics, icon: BarChart3 },
+    { key: "settings", label: t.nav.settings, icon: Settings },
+  ];
+  const studentNav = [
+    { key: "myGroups", label: t.nav.myGroups, icon: FolderKanban },
+    { key: "myMaterials", label: t.nav.myMaterials, icon: BookOpen },
+    { key: "myAssignments", label: t.nav.myAssignments, icon: ClipboardList },
+    { key: "myGrades", label: t.nav.myGrades, icon: GraduationCap },
+    { key: "chat", label: t.nav.chat, icon: MessageSquare },
+    { key: "profile", label: t.nav.profile, icon: Settings },
+  ];
+
+  const themeVars = theme === "light" ? LIGHT : DARK;
+  const shellProps = { lang, theme, onLang: toggleLang, onTheme: toggleTheme };
+
+  return (
+    <div className="th-root" dir={dir} data-theme={theme}
+      style={{ ...themeVars, fontFamily: lang === "ar" ? "var(--font-ar)" : "var(--font-ui)" }}>
+      <style>{CSS}</style>
+
+      {phase === "loading" && <div className="th-bootscreen"><Brandmark t={t} /><Spinner /></div>}
+
+      {phase === "setup" && (
+        <SetupScreen t={t} {...shellProps} onDone={enter} />
+      )}
+
+      {phase === "login" && (
+        <Login t={t} {...shellProps} onAuthed={enter} connError={connError} />
+      )}
+
+      {phase === "app" && user && (
+        <Shell t={t} {...shellProps} role={role} user={user} onLogout={logout}
+          nav={role === "tutor" ? tutorNav : studentNav} view={view} setView={setView}
+          notifs={notifs} onMarkAllRead={markAllRead}>
+          {role === "tutor" && <>
+            {view === "dashboard" && <TutorDashboard t={t} students={students} groups={groups} assignments={assignments} materials={materials} grades={grades} submissions={submissions} loading={loadingData} />}
+            {view === "students" && <StudentsSection t={t} students={students} groups={groups} reload={reloadStudents} />}
+            {view === "groups" && <GroupsSection t={t} groups={groups} students={students} reload={() => Promise.all([reloadGroups(), reloadStudents()])} />}
+            {view === "assignments" && <AssignmentsSection t={t} assignments={assignments} groups={groups} reload={reloadAssignments} />}
+            {view === "materials" && <MaterialsSection t={t} materials={materials} groups={groups} reload={reloadMaterials} />}
+            {view === "chats" && <ChatsSection t={t} role={role} user={user} contacts={contacts} />}
+            {view === "grades" && <GradesSection t={t} submissions={submissions} assignments={assignments} reload={() => Promise.all([reloadSubmissions(), reloadGrades()])} />}
+            {view === "analytics" && <AnalyticsSection t={t} grades={grades} submissions={submissions} assignments={assignments} />}
+            {view === "settings" && <SettingsSection t={t} lang={lang} theme={theme} user={user} onLang={toggleLang} onTheme={toggleTheme} onProfileSaved={setUser} />}
+          </>}
+          {role === "student" && <>
+            {view === "myGroups" && <StudentGroups t={t} groups={groups} loading={loadingData} />}
+            {view === "myMaterials" && <StudentMaterials t={t} materials={materials} groups={groups} loading={loadingData} />}
+            {view === "myAssignments" && <StudentAssignments t={t} assignments={assignments} loading={loadingData} reload={reloadAssignments} />}
+            {view === "myGrades" && <StudentGrades t={t} grades={grades} loading={loadingData} />}
+            {view === "chat" && <ChatsSection t={t} role={role} user={user} contacts={contacts} />}
+            {view === "profile" && <SettingsSection t={t} lang={lang} theme={theme} user={user} onLang={toggleLang} onTheme={toggleTheme} onProfileSaved={setUser} />}
+          </>}
+        </Shell>
+      )}
+    </div>
+  );
+}
+
 const T = {
   en: {
+    saveChanges: "Save changes", newPassword: "New password", leaveBlankPw: "Leave blank to keep current", profileUpdated: "Profile updated.",
+    setupTitle: "Set up TechHeroes", setupSub: "Create the administrator account to begin. You'll manage students, groups, materials, and grades from here.",
+    createAdmin: "Create administrator", createAccount: "Create account", min8: "At least 8 characters",
+    setupOnce: "This screen appears only once, on first launch.", connError: "Couldn't reach the server. Check your connection and try again.",
+    loading: "Loading…", noNotifs: "You're all caught up.", gradeDistribution: "Grade distribution",
+    noDataYet: "No data yet", dashHint: "Charts fill in as students submit work and you publish grades.", noDeadlines: "No upcoming deadlines.",
+    noStudents: "No students yet", noStudentsHint: "Add your first student to get started.",
+    defaultPwNote: "New students receive a temporary password set on the server. Share it with them securely.",
+    confirmDeleteGroup: "Delete this group? Students stay; only the group is removed.", confirmDeleteGeneric: "Delete this item? This can't be undone.",
+    noGroups: "No groups yet", noGroupsHint: "Create a group, then add students to it.", addMember: "Add to group", removeMember: "Remove from group",
+    noAssignments: "No assignments yet", noAssignmentsHint: "Create your first assignment.",
+    addMaterial: "Add material", noMaterials: "No materials yet", noMaterialsHint: "Share your first learning material.",
+    fileLink: "File link (optional)", blobNote: "To host files directly, connect Vercel Blob (see the guide). For now, paste a link.",
+    gradeSub: "Review submissions and publish grades.", noSubmissions: "No submissions yet", noSubmissionsHint: "Submissions appear here once students hand in work.",
+    regrade: "Update grade", letter: "Letter", noChats: "No conversations yet.", pickChat: "Select a conversation to start messaging.",
+    noMessages: "No messages yet. Say hello.", submissions7d: "Submissions (last 7 days)", analyticsHint: "Insights appear as students submit work.",
+    noneAtRisk: "No students at risk.", open: "Open", noFile: "No file attached", comment: "Comment",
+    noMyGroups: "You're not in any groups yet.", noMyMaterials: "No materials shared with you yet.", noMyAssignments: "No assignments yet.",
+    noMyGrades: "No grades yet", noMyGradesHint: "Your grades appear here after the tutor reviews your work.",
     dir: "ltr", brand: "TechHeroes", tagline: "Empowering Learning Through Collaboration",
     student: "Student", team: "Team", tutor: "Tutor", admin: "Admin",
     studentLogin: "Student Login", teamLogin: "Team Login", tutorLogin: "Tutor / Admin",
@@ -68,6 +1264,25 @@ const T = {
     quickActions: "Quick actions", searchMessages: "Search messages…",
   },
   ar: {
+    saveChanges: "حفظ التغييرات", newPassword: "كلمة مرور جديدة", leaveBlankPw: "اتركها فارغة للإبقاء على الحالية", profileUpdated: "تم تحديث الملف الشخصي.",
+    setupTitle: "إعداد TechHeroes", setupSub: "أنشئ حساب المشرف للبدء. ستدير الطلاب والمجموعات والمواد والدرجات من هنا.",
+    createAdmin: "إنشاء حساب المشرف", createAccount: "إنشاء الحساب", min8: "٨ أحرف على الأقل",
+    setupOnce: "تظهر هذه الشاشة مرة واحدة فقط عند أول تشغيل.", connError: "تعذّر الوصول إلى الخادم. تحقق من اتصالك وحاول مجددًا.",
+    loading: "جارٍ التحميل…", noNotifs: "لا توجد إشعارات جديدة.", gradeDistribution: "توزيع الدرجات",
+    noDataYet: "لا توجد بيانات بعد", dashHint: "تظهر الرسوم عند تسليم الطلاب أعمالهم ونشر الدرجات.", noDeadlines: "لا مواعيد قادمة.",
+    noStudents: "لا يوجد طلاب بعد", noStudentsHint: "أضف أول طالب للبدء.",
+    defaultPwNote: "يحصل الطلاب الجدد على كلمة مرور مؤقتة مضبوطة في الخادم. شاركها معهم بأمان.",
+    confirmDeleteGroup: "حذف هذه المجموعة؟ يبقى الطلاب وتُحذف المجموعة فقط.", confirmDeleteGeneric: "حذف هذا العنصر؟ لا يمكن التراجع.",
+    noGroups: "لا توجد مجموعات بعد", noGroupsHint: "أنشئ مجموعة ثم أضف الطلاب إليها.", addMember: "إضافة إلى المجموعة", removeMember: "إزالة من المجموعة",
+    noAssignments: "لا توجد واجبات بعد", noAssignmentsHint: "أنشئ أول واجب.",
+    addMaterial: "إضافة مادة", noMaterials: "لا توجد مواد بعد", noMaterialsHint: "شارك أول مادة تعليمية.",
+    fileLink: "رابط الملف (اختياري)", blobNote: "لاستضافة الملفات مباشرة، فعّل Vercel Blob (راجع الدليل). مؤقتًا، ألصق رابطًا.",
+    gradeSub: "راجع التسليمات وانشر الدرجات.", noSubmissions: "لا توجد تسليمات بعد", noSubmissionsHint: "تظهر التسليمات هنا بعد أن يسلّم الطلاب أعمالهم.",
+    regrade: "تحديث الدرجة", letter: "تقدير حرفي", noChats: "لا توجد محادثات بعد.", pickChat: "اختر محادثة لبدء المراسلة.",
+    noMessages: "لا توجد رسائل بعد. ابدأ بالتحية.", submissions7d: "التسليمات (آخر ٧ أيام)", analyticsHint: "تظهر التحليلات عند تسليم الطلاب أعمالهم.",
+    noneAtRisk: "لا يوجد طلاب بحاجة لمتابعة.", open: "فتح", noFile: "لا يوجد ملف مرفق", comment: "تعليق",
+    noMyGroups: "لست في أي مجموعة بعد.", noMyMaterials: "لا توجد مواد مشاركة معك بعد.", noMyAssignments: "لا توجد واجبات بعد.",
+    noMyGrades: "لا توجد درجات بعد", noMyGradesHint: "تظهر درجاتك هنا بعد مراجعة المعلّم لعملك.",
     dir: "rtl", brand: "TechHeroes", tagline: "تمكين التعلم من خلال التعاون",
     student: "طالب", team: "فريق", tutor: "المعلّم", admin: "مشرف",
     studentLogin: "دخول الطالب", teamLogin: "دخول الفريق", tutorLogin: "المعلّم / المشرف",
@@ -122,1028 +1337,6 @@ const T = {
   },
 };
 
-/* ============================== Seed data ============================== */
-const SEED_STUDENTS = [
-  { id: "S-24001", name: "Layla Hassan", email: "layla@techheroes.io", group: "Frontend Cohort", status: "active", grade: 94 },
-  { id: "S-24002", name: "Omar Khalil", email: "omar@techheroes.io", group: "Backend Cohort", status: "active", grade: 88 },
-  { id: "S-24003", name: "Sara Nasser", email: "sara@techheroes.io", group: "Frontend Cohort", status: "active", grade: 76 },
-  { id: "S-24004", name: "Yusuf Amin", email: "yusuf@techheroes.io", group: "Data Cohort", status: "inactive", grade: 61 },
-  { id: "S-24005", name: "Mariam Adel", email: "mariam@techheroes.io", group: "Backend Cohort", status: "active", grade: 91 },
-  { id: "S-24006", name: "Karim Fouad", email: "karim@techheroes.io", group: "Data Cohort", status: "active", grade: 58 },
-  { id: "S-24007", name: "Nour Saleh", email: "nour@techheroes.io", group: "Frontend Cohort", status: "active", grade: 83 },
-];
-const SEED_GROUPS = [
-  { id: "g1", name: "Frontend Cohort", desc: "React, UI systems & accessibility", members: 3, progress: 78, tasks: 12, materials: 9 },
-  { id: "g2", name: "Backend Cohort", desc: "APIs, databases & auth", members: 2, progress: 64, tasks: 10, materials: 7 },
-  { id: "g3", name: "Data Cohort", desc: "Python, SQL & visualization", members: 2, progress: 41, tasks: 8, materials: 6 },
-];
-const SEED_ASSIGNMENTS = [
-  { id: "a1", title: "Responsive Landing Page", group: "Frontend Cohort", deadline: "Jun 22", type: "group", status: "submitted" },
-  { id: "a2", title: "REST API with JWT Auth", group: "Backend Cohort", deadline: "Jun 25", type: "individual", status: "pending" },
-  { id: "a3", title: "Sales Data Cleaning", group: "Data Cohort", deadline: "Jun 18", type: "individual", status: "late" },
-  { id: "a4", title: "Accessibility Audit", group: "Frontend Cohort", deadline: "Jun 28", type: "group", status: "graded" },
-];
-const SEED_MATERIALS = [
-  { id: "m1", title: "React Hooks — Deep Dive", type: "PDF", target: "Frontend Cohort", date: "Jun 10" },
-  { id: "m2", title: "Designing REST APIs", type: "PPTX", target: "Backend Cohort", date: "Jun 11" },
-  { id: "m3", title: "Intro to Pandas", type: "Video", target: "Data Cohort", date: "Jun 12" },
-  { id: "m4", title: "Color & Contrast Guide", type: "Link", target: "All groups", date: "Jun 13" },
-  { id: "m5", title: "SQL Cheat Sheet", type: "DOCX", target: "S-24004", date: "Jun 14" },
-];
-const SEED_GRADES = [
-  { id: "gr1", student: "Layla Hassan", assignment: "Responsive Landing Page", grade: 95, letter: "A", feedback: "Excellent work. Meets all requirements." },
-  { id: "gr2", student: "Omar Khalil", assignment: "REST API with JWT Auth", grade: 88, letter: "B+", feedback: "Solid. Tighten error handling." },
-  { id: "gr3", student: "Sara Nasser", assignment: "Accessibility Audit", grade: 79, letter: "B", feedback: "Good start — check focus order." },
-  { id: "gr4", student: "Karim Fouad", assignment: "Sales Data Cleaning", grade: 58, letter: "D", feedback: "Let's review together this week." },
-];
-const PROGRESS_SERIES = [
-  { w: "W1", Frontend: 30, Backend: 22, Data: 18 },
-  { w: "W2", Frontend: 45, Backend: 35, Data: 25 },
-  { w: "W3", Frontend: 58, Backend: 44, Data: 30 },
-  { w: "W4", Frontend: 66, Backend: 52, Data: 35 },
-  { w: "W5", Frontend: 78, Backend: 64, Data: 41 },
-];
-const COMPLETION_SERIES = [
-  { name: "Frontend", value: 86 }, { name: "Backend", value: 71 }, { name: "Data", value: 53 },
-];
-const ACTIVITY_SERIES = [
-  { d: "Mon", msgs: 42 }, { d: "Tue", msgs: 65 }, { d: "Wed", msgs: 51 },
-  { d: "Thu", msgs: 78 }, { d: "Fri", msgs: 96 }, { d: "Sat", msgs: 34 }, { d: "Sun", msgs: 21 },
-];
-const SEED_NOTIFS = [
-  { id: "n1", kind: "assignment", t: "New assignment", b: "REST API with JWT Auth · due Jun 25", read: false },
-  { id: "n2", kind: "grade", t: "Grade published", b: "Responsive Landing Page · 95 (A)", read: false },
-  { id: "n3", kind: "message", t: "New message", b: "Omar Khalil sent you a message", read: false },
-  { id: "n4", kind: "deadline", t: "Deadline approaching", b: "Sales Data Cleaning · due tomorrow", read: true },
-];
-const initialChats = () => ([
-  { id: "c1", who: "Layla Hassan", role: "student", last: "Thanks, that helped!", unread: 0, msgs: [
-    { from: "them", text: "Hi! Quick question on the landing page grid.", time: "09:12" },
-    { from: "me", text: "Sure — use a 12-column layout and collapse to 4 on mobile.", time: "09:15" },
-    { from: "them", text: "Thanks, that helped!", time: "09:16" },
-  ]},
-  { id: "c2", who: "Omar Khalil", role: "student", last: "Pushed the auth fix.", unread: 2, msgs: [
-    { from: "them", text: "JWT refresh is failing on logout.", time: "10:01" },
-    { from: "me", text: "Clear the refresh cookie server-side on logout.", time: "10:04" },
-    { from: "them", text: "Pushed the auth fix.", time: "10:20" },
-  ]},
-  { id: "g1", who: "Frontend Cohort", role: "group", last: "Pinned: rubric posted 📌", unread: 5, pinned: "Rubric for the landing page is posted in Materials.", msgs: [
-    { from: "Sara", text: "Is the audit individual or group?", time: "11:00" },
-    { from: "me", text: "Group — one submission per team.", time: "11:02" },
-    { from: "Nour", text: "Got it, thanks!", time: "11:05" },
-  ]},
-]);
-
-/* ============================== Small UI atoms ============================== */
-const cx = (...a) => a.filter(Boolean).join(" ");
-
-function Badge({ kind, children }) {
-  return <span className={cx("th-badge", kind && `th-badge--${kind}`)}>{children}</span>;
-}
-
-function Avatar({ name, size = 36 }) {
-  const initials = name.split(" ").map(w => w[0]).slice(0, 2).join("").toUpperCase();
-  return <span className="th-avatar" style={{ width: size, height: size, fontSize: size * 0.38 }}>{initials}</span>;
-}
-
-function Modal({ open, onClose, title, children, footer }) {
-  if (!open) return null;
-  return (
-    <div className="th-modal-scrim" onClick={onClose}>
-      <div className="th-modal" onClick={e => e.stopPropagation()}>
-        <div className="th-modal__head">
-          <h3>{title}</h3>
-          <button className="th-iconbtn" onClick={onClose} aria-label="Close"><X size={18} /></button>
-        </div>
-        <div className="th-modal__body">{children}</div>
-        {footer && <div className="th-modal__foot">{footer}</div>}
-      </div>
-    </div>
-  );
-}
-
-function Field({ label, children }) {
-  return <label className="th-field"><span className="th-field__label">{label}</span>{children}</label>;
-}
-
-function Donut({ value }) {
-  const data = [{ name: "v", value, fill: "var(--brand)" }];
-  return (
-    <ResponsiveContainer width="100%" height={120}>
-      <RadialBarChart innerRadius="70%" outerRadius="100%" data={data} startAngle={90} endAngle={-270}>
-        <RadialBar background={{ fill: "var(--line)" }} dataKey="value" cornerRadius={20} />
-      </RadialBarChart>
-    </ResponsiveContainer>
-  );
-}
-
-/* ============================== Login ============================== */
-function Login({ t, lang, theme, onLang, onTheme, onLogin }) {
-  const [tab, setTab] = useState("student");
-  const fields = {
-    student: { id: t.studentId, ph: "S-24001" },
-    tutor: { id: t.tutor, ph: "tutor@techheroes.io" },
-  }[tab];
-
-  return (
-    <div className="th-login">
-      <div className="th-login__topbar">
-        <Brandmark t={t} />
-        <div className="th-login__controls">
-          <button className="th-pillbtn" onClick={onLang}><Globe size={16} />{lang === "en" ? "العربية" : "English"}</button>
-          <button className="th-iconbtn th-iconbtn--ring" onClick={onTheme} aria-label="Toggle theme">
-            {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
-          </button>
-        </div>
-      </div>
-
-      <div className="th-login__grid">
-        <section className="th-hero">
-          <div className="th-hero__orbit" aria-hidden="true">
-            <span className="th-orbit th-orbit--1" /><span className="th-orbit th-orbit--2" />
-            <span className="th-spark"><Sparkles size={20} /></span>
-          </div>
-          <p className="th-eyebrow"><ShieldCheck size={14} /> {t.brand}</p>
-          <h1 className="th-hero__title">{t.tagline}</h1>
-          <p className="th-hero__sub">
-            {lang === "en"
-              ? "An organized learning environment where tutors guide, students build, and everyone grows — together."
-              : "بيئة تعلّم منظّمة يوجّه فيها المعلّمون، ويتعلّم فيها الطلاب وينمون — معًا."}
-          </p>
-          <div className="th-hero__stats">
-            <div><strong>320+</strong><span>{t.stats.totalStudents}</span></div>
-            <div><strong>24</strong><span>{t.stats.activeGroups}</span></div>
-            <div><strong>96%</strong><span>{t.completionRate}</span></div>
-          </div>
-        </section>
-
-        <section className="th-authcard">
-          <div className="th-segment">
-            {["student", "tutor"].map(k => (
-              <button key={k} className={cx("th-segment__btn", tab === k && "is-active")} onClick={() => setTab(k)}>
-                {k === "student" ? t.student : t.tutor}
-              </button>
-            ))}
-          </div>
-
-          <h2 className="th-authcard__title">
-            {tab === "student" ? t.studentLogin : t.tutorLogin}
-          </h2>
-
-          <Field label={fields.id}>
-            <input className="th-input" defaultValue={fields.ph} placeholder={fields.ph} />
-          </Field>
-          <Field label={t.password}>
-            <input className="th-input" type="password" defaultValue="demo1234" />
-          </Field>
-
-          <button className="th-btn th-btn--primary th-btn--lg" onClick={() => onLogin(tab)}>
-            {t.login} <ChevronRight size={18} className="th-rtl-flip" />
-          </button>
-
-          <div className="th-divider"><span>{t.demoHint}</span></div>
-          <div className="th-demo-roles">
-            <button className="th-chip" onClick={() => onLogin("tutor")}><GraduationCap size={15} /> {t.tutor}</button>
-            <button className="th-chip" onClick={() => onLogin("student")}><CircleUserRound size={15} /> {t.student}</button>
-          </div>
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function Brandmark({ t, compact }) {
-  return (
-    <div className={cx("th-brand", compact && "th-brand--compact")}>
-      <span className="th-brand__mark"><GraduationCap size={20} /><i className="th-brand__spark" /></span>
-      {!compact && <span className="th-brand__text">{t.brand}</span>}
-    </div>
-  );
-}
-
-/* ============================== Shell ============================== */
-function Shell({ t, lang, theme, role, onLang, onTheme, onLogout, children, nav, view, setView, notifs, setNotifs }) {
-  const [mobileOpen, setMobileOpen] = useState(false);
-  const [bellOpen, setBellOpen] = useState(false);
-  const unread = notifs.filter(n => !n.read).length;
-  const roleLabel = role === "tutor" ? t.tutor : t.student;
-
-  return (
-    <div className="th-shell">
-      <aside className={cx("th-sidebar", mobileOpen && "is-open")}>
-        <div className="th-sidebar__head">
-          <Brandmark t={t} />
-          <button className="th-iconbtn th-sidebar__close" onClick={() => setMobileOpen(false)}><X size={18} /></button>
-        </div>
-        <nav className="th-nav">
-          {nav.map(item => (
-            <button key={item.key}
-              className={cx("th-nav__item", view === item.key && "is-active")}
-              onClick={() => { setView(item.key); setMobileOpen(false); }}>
-              <item.icon size={18} />
-              <span>{item.label}</span>
-              {view === item.key && <span className="th-nav__bar" />}
-            </button>
-          ))}
-        </nav>
-        <div className="th-sidebar__foot">
-          <div className="th-userpill">
-            <Avatar name={role === "tutor" ? "Dr Amina Said" : "Layla Hassan"} size={34} />
-            <div className="th-userpill__meta">
-              <strong>{role === "tutor" ? "Dr Amina Said" : "Layla Hassan"}</strong>
-              <span>{roleLabel}</span>
-            </div>
-            <button className="th-iconbtn" onClick={onLogout} aria-label={t.signOut}><LogOut size={16} /></button>
-          </div>
-        </div>
-      </aside>
-
-      {mobileOpen && <div className="th-scrim" onClick={() => setMobileOpen(false)} />}
-
-      <div className="th-main">
-        <header className="th-topbar">
-          <button className="th-iconbtn th-topbar__menu" onClick={() => setMobileOpen(true)}><Menu size={20} /></button>
-          <div className="th-topbar__title">
-            <span className="th-topbar__crumb">{roleLabel}</span>
-            <ChevronRight size={14} className="th-rtl-flip th-topbar__sep" />
-            <strong>{nav.find(n => n.key === view)?.label}</strong>
-          </div>
-          <div className="th-topbar__actions">
-            <button className="th-pillbtn" onClick={onLang}><Globe size={16} />{lang === "en" ? "ع" : "EN"}</button>
-            <button className="th-iconbtn th-iconbtn--ring" onClick={onTheme} aria-label="Toggle theme">
-              {theme === "light" ? <Moon size={18} /> : <Sun size={18} />}
-            </button>
-            <div className="th-bellwrap">
-              <button className="th-iconbtn th-iconbtn--ring" onClick={() => setBellOpen(o => !o)} aria-label={t.notifications}>
-                <Bell size={18} />{unread > 0 && <span className="th-bell-dot">{unread}</span>}
-              </button>
-              {bellOpen && (
-                <div className="th-popover" onMouseLeave={() => setBellOpen(false)}>
-                  <div className="th-popover__head">
-                    <strong>{t.notifTitle}</strong>
-                    <button className="th-link" onClick={() => setNotifs(notifs.map(n => ({ ...n, read: true })))}>{t.markAllRead}</button>
-                  </div>
-                  <div className="th-popover__list">
-                    {notifs.map(n => (
-                      <div key={n.id} className={cx("th-notif", !n.read && "is-unread")}>
-                        <span className={cx("th-notif__ic", `th-notif__ic--${n.kind}`)}>
-                          {n.kind === "assignment" ? <ClipboardList size={15} /> : n.kind === "grade" ? <Award size={15} /> :
-                           n.kind === "message" ? <MessageSquare size={15} /> : <Clock size={15} />}
-                        </span>
-                        <div><strong>{n.t}</strong><span>{n.b}</span></div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </header>
-        <main className="th-content">{children}</main>
-      </div>
-    </div>
-  );
-}
-
-/* ============================== Reusable section bits ============================== */
-function PageHead({ title, subtitle, action }) {
-  return (
-    <div className="th-pagehead">
-      <div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>
-      {action}
-    </div>
-  );
-}
-
-function Card({ children, className }) { return <div className={cx("th-card", className)}>{children}</div>; }
-
-/* ============================== TUTOR sections ============================== */
-function TutorDashboard({ t, lang, students, groups, assignments }) {
-  const avg = Math.round(students.reduce((s, x) => s + x.grade, 0) / students.length);
-  const stats = [
-    { k: "totalStudents", v: students.length, ic: Users, d: "+3 " + t.thisWeek },
-    { k: "activeGroups", v: groups.length, ic: FolderKanban, d: t.overview },
-    { k: "pendingAssignments", v: assignments.filter(a => a.status === "pending" || a.status === "late").length, ic: ClipboardList, d: "" },
-    { k: "submittedAssignments", v: assignments.filter(a => a.status === "submitted" || a.status === "graded").length, ic: CheckCircle2, d: "" },
-    { k: "avgGrade", v: avg, ic: Award, d: t.overview, suffix: "" },
-  ];
-  const localized = lang === "ar"; // legend localization
-  return (
-    <>
-      <PageHead title={t.nav.dashboard} subtitle={t.welcome + ", Dr Amina."} />
-      <div className="th-statgrid">
-        {stats.map(s => (
-          <Card key={s.k} className="th-stat">
-            <span className="th-stat__ic"><s.ic size={20} /></span>
-            <div className="th-stat__body">
-              <span className="th-stat__label">{t.stats[s.k]}</span>
-              <strong className="th-stat__value">{s.v}</strong>
-              {s.d && <span className="th-stat__delta"><ArrowUpRight size={12} className="th-rtl-flip" />{s.d}</span>}
-            </div>
-          </Card>
-        ))}
-      </div>
-
-      <div className="th-chartgrid">
-        <Card className="th-chartcard th-chartcard--wide">
-          <div className="th-chartcard__head"><h3>{t.charts.studentProgress}</h3><Badge kind="brand"><TrendingUp size={12} /> +14%</Badge></div>
-          <ResponsiveContainer width="100%" height={240}>
-            <LineChart data={PROGRESS_SERIES} margin={{ left: -18, right: 8, top: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
-              <XAxis dataKey="w" stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
-              <YAxis stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Line type="monotone" dataKey="Frontend" stroke="var(--brand)" strokeWidth={2.5} dot={false} />
-              <Line type="monotone" dataKey="Backend" stroke="var(--ink-soft)" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="Data" stroke="var(--muted)" strokeWidth={2} strokeDasharray="4 4" dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card className="th-chartcard">
-          <div className="th-chartcard__head"><h3>{t.charts.assignmentCompletion}</h3></div>
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={COMPLETION_SERIES} margin={{ left: -18, right: 8, top: 8 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
-              <XAxis dataKey="name" stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
-              <YAxis stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
-              <Tooltip contentStyle={tooltipStyle} cursor={{ fill: "var(--brand-soft)" }} />
-              <Bar dataKey="value" radius={[8, 8, 0, 0]} fill="var(--brand)" />
-            </BarChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card className="th-chartcard th-chartcard--wide">
-          <div className="th-chartcard__head"><h3>{t.charts.groupActivity}</h3></div>
-          <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={ACTIVITY_SERIES} margin={{ left: -18, right: 8, top: 8 }}>
-              <defs>
-                <linearGradient id="actfill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="var(--brand)" stopOpacity={0.35} />
-                  <stop offset="100%" stopColor="var(--brand)" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
-              <XAxis dataKey="d" stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
-              <YAxis stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Area type="monotone" dataKey="msgs" stroke="var(--brand)" strokeWidth={2.5} fill="url(#actfill)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </Card>
-
-        <Card className="th-chartcard">
-          <div className="th-chartcard__head"><h3>{t.deadlines}</h3></div>
-          <ul className="th-deadlines">
-            {assignments.slice(0, 4).map(a => (
-              <li key={a.id}>
-                <span className="th-deadlines__cal"><Calendar size={15} /></span>
-                <div><strong>{a.title}</strong><span>{a.group}</span></div>
-                <Badge kind={statusKind(a.status)}>{a.deadline}</Badge>
-              </li>
-            ))}
-          </ul>
-        </Card>
-      </div>
-    </>
-  );
-}
-
-function StudentsSection({ t, students, setStudents, groups }) {
-  const [q, setQ] = useState("");
-  const [groupF, setGroupF] = useState("");
-  const [modal, setModal] = useState(null); // {mode, data}
-  const filtered = students.filter(s =>
-    (s.name.toLowerCase().includes(q.toLowerCase()) || s.id.toLowerCase().includes(q.toLowerCase())) &&
-    (!groupF || s.group === groupF)
-  );
-  const blank = { id: "", name: "", email: "", group: groups[0]?.name || "", status: "active", grade: 0 };
-
-  const save = (data) => {
-    if (modal.mode === "add") setStudents([...students, { ...data, grade: Number(data.grade) || 0 }]);
-    else setStudents(students.map(s => s.id === modal.data.id ? { ...data, grade: Number(data.grade) || 0 } : s));
-    setModal(null);
-  };
-  const del = (id) => { if (window.confirm(t.confirmDelete)) setStudents(students.filter(s => s.id !== id)); };
-
-  return (
-    <>
-      <PageHead title={t.nav.students} subtitle={`${students.length} ${t.nav.students.toLowerCase()}`}
-        action={<button className="th-btn th-btn--primary" onClick={() => setModal({ mode: "add", data: blank })}><Plus size={16} />{t.addStudent}</button>} />
-      <Card>
-        <div className="th-toolbar">
-          <div className="th-search">
-            <Search size={16} />
-            <input value={q} onChange={e => setQ(e.target.value)} placeholder={t.searchStudents} />
-          </div>
-          <div className="th-select">
-            <Filter size={15} />
-            <select value={groupF} onChange={e => setGroupF(e.target.value)}>
-              <option value="">{t.allGroups}</option>
-              {groups.map(g => <option key={g.id} value={g.name}>{g.name}</option>)}
-            </select>
-          </div>
-        </div>
-        <div className="th-tablewrap">
-          <table className="th-table">
-            <thead><tr>
-              <th>{t.name}</th><th>S-NUM</th><th>{t.email}</th><th>{t.group}</th><th>{t.status}</th><th className="th-ta-end">{t.actions}</th>
-            </tr></thead>
-            <tbody>
-              {filtered.map(s => (
-                <tr key={s.id}>
-                  <td><div className="th-cellname"><Avatar name={s.name} size={32} /><span>{s.name}</span></div></td>
-                  <td><span className="th-mono">{s.id}</span></td>
-                  <td className="th-muted">{s.email}</td>
-                  <td>{s.group}</td>
-                  <td><Badge kind={s.status === "active" ? "ok" : "muted"}>{s.status === "active" ? t.active : t.inactive}</Badge></td>
-                  <td className="th-ta-end">
-                    <div className="th-rowactions">
-                      <button className="th-iconbtn" onClick={() => setModal({ mode: "edit", data: s })}><Pencil size={15} /></button>
-                      <button className="th-iconbtn th-iconbtn--danger" onClick={() => del(s.id)}><Trash2 size={15} /></button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {filtered.length === 0 && <div className="th-empty">{t.noResults}</div>}
-        </div>
-      </Card>
-
-      <StudentModal t={t} modal={modal} groups={groups} onClose={() => setModal(null)} onSave={save} />
-    </>
-  );
-}
-
-function StudentModal({ t, modal, groups, onClose, onSave }) {
-  const [form, setForm] = useState(null);
-  useEffect(() => { setForm(modal?.data ? { ...modal.data } : null); }, [modal]);
-  if (!modal || !form) return null;
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
-  return (
-    <Modal open onClose={onClose} title={modal.mode === "add" ? t.addStudent : t.editStudent}
-      footer={<>
-        <button className="th-btn" onClick={onClose}>{t.cancel}</button>
-        <button className="th-btn th-btn--primary" onClick={() => onSave(form)}>{t.save}</button>
-      </>}>
-      <div className="th-formgrid">
-        <Field label={t.fullName}><input className="th-input" value={form.name} onChange={e => set("name", e.target.value)} /></Field>
-        <Field label="S-NUM"><input className="th-input" value={form.id} onChange={e => set("id", e.target.value)} placeholder="S-24008" /></Field>
-        <Field label={t.email}><input className="th-input" value={form.email} onChange={e => set("email", e.target.value)} /></Field>
-        <Field label={t.group}>
-          <select className="th-input" value={form.group} onChange={e => set("group", e.target.value)}>
-            {groups.map(g => <option key={g.id} value={g.name}>{g.name}</option>)}
-          </select>
-        </Field>
-        <Field label={t.status}>
-          <select className="th-input" value={form.status} onChange={e => set("status", e.target.value)}>
-            <option value="active">{t.active}</option><option value="inactive">{t.inactive}</option>
-          </select>
-        </Field>
-        <Field label={t.grade}><input className="th-input" type="number" value={form.grade} onChange={e => set("grade", e.target.value)} /></Field>
-      </div>
-    </Modal>
-  );
-}
-
-function GroupsSection({ t, groups, setGroups }) {
-  const [open, setOpen] = useState(false);
-  const [name, setName] = useState("");
-  const create = () => {
-    if (!name.trim()) return;
-    setGroups([...groups, { id: "g" + Date.now(), name, desc: "New learning group", members: 0, progress: 0, tasks: 0, materials: 0 }]);
-    setName(""); setOpen(false);
-  };
-  return (
-    <>
-      <PageHead title={t.nav.groups} subtitle={`${groups.length} ${t.nav.groups.toLowerCase()}`}
-        action={<button className="th-btn th-btn--primary" onClick={() => setOpen(true)}><Plus size={16} />{t.createGroup}</button>} />
-      <div className="th-cardgrid">
-        {groups.map(g => (
-          <Card key={g.id} className="th-groupcard">
-            <div className="th-groupcard__head">
-              <div><strong>{g.name}</strong><p>{g.desc}</p></div>
-              <div className="th-rowactions">
-                <button className="th-iconbtn"><Pencil size={15} /></button>
-                <button className="th-iconbtn th-iconbtn--danger" onClick={() => setGroups(groups.filter(x => x.id !== g.id))}><Trash2 size={15} /></button>
-              </div>
-            </div>
-            <div className="th-progress"><div className="th-progress__bar" style={{ width: g.progress + "%" }} /></div>
-            <div className="th-progress__label"><span>{t.progress}</span><strong>{g.progress}%</strong></div>
-            <div className="th-groupcard__meta">
-              <span><Users size={14} />{g.members} {t.members.toLowerCase()}</span>
-              <span><ClipboardList size={14} />{g.tasks} {t.tasks.toLowerCase()}</span>
-              <span><BookOpen size={14} />{g.materials} {t.nav.materials.toLowerCase()}</span>
-            </div>
-          </Card>
-        ))}
-      </div>
-      <Modal open={open} onClose={() => setOpen(false)} title={t.createGroup}
-        footer={<><button className="th-btn" onClick={() => setOpen(false)}>{t.cancel}</button>
-          <button className="th-btn th-btn--primary" onClick={create}>{t.create}</button></>}>
-        <Field label={t.groupName}><input className="th-input" value={name} onChange={e => setName(e.target.value)} placeholder="Mobile Cohort" autoFocus /></Field>
-      </Modal>
-    </>
-  );
-}
-
-function AssignmentsSection({ t, assignments, setAssignments, groups }) {
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", group: groups[0]?.name || "", deadline: "", type: "group" });
-  const create = () => {
-    if (!form.title.trim()) return;
-    setAssignments([{ id: "a" + Date.now(), ...form, deadline: form.deadline || "Jun 30", status: "pending" }, ...assignments]);
-    setForm({ title: "", group: groups[0]?.name || "", deadline: "", type: "group" }); setOpen(false);
-  };
-  return (
-    <>
-      <PageHead title={t.nav.assignments}
-        action={<button className="th-btn th-btn--primary" onClick={() => setOpen(true)}><Plus size={16} />{t.createAssignment}</button>} />
-      <Card>
-        <div className="th-tablewrap">
-          <table className="th-table">
-            <thead><tr><th>{t.title}</th><th>{t.group}</th><th>{t.type}</th><th>{t.deadline}</th><th>{t.status}</th><th className="th-ta-end">{t.actions}</th></tr></thead>
-            <tbody>
-              {assignments.map(a => (
-                <tr key={a.id}>
-                  <td><strong>{a.title}</strong></td>
-                  <td>{a.group}</td>
-                  <td><Badge kind="muted">{a.type === "group" ? t.groupAssignment : t.individual}</Badge></td>
-                  <td className="th-muted">{a.deadline}</td>
-                  <td><Badge kind={statusKind(a.status)}>{t[a.status]}</Badge></td>
-                  <td className="th-ta-end"><button className="th-link">{t.viewSubmissions}<ChevronRight size={14} className="th-rtl-flip" /></button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-      <Modal open={open} onClose={() => setOpen(false)} title={t.createAssignment}
-        footer={<><button className="th-btn" onClick={() => setOpen(false)}>{t.cancel}</button>
-          <button className="th-btn th-btn--primary" onClick={create}>{t.create}</button></>}>
-        <div className="th-formgrid">
-          <Field label={t.title}><input className="th-input th-col-2" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} /></Field>
-          <Field label={t.group}><select className="th-input" value={form.group} onChange={e => setForm({ ...form, group: e.target.value })}>{groups.map(g => <option key={g.id}>{g.name}</option>)}</select></Field>
-          <Field label={t.type}><select className="th-input" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}><option value="group">{t.groupAssignment}</option><option value="individual">{t.individual}</option></select></Field>
-          <Field label={t.deadline}><input className="th-input" value={form.deadline} onChange={e => setForm({ ...form, deadline: e.target.value })} placeholder="Jun 30" /></Field>
-          <Field label={t.attachments}><div className="th-dropmini"><Upload size={15} />{t.uploadFiles}</div></Field>
-        </div>
-      </Modal>
-    </>
-  );
-}
-
-function MaterialsSection({ t, materials, setMaterials, groups }) {
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", type: "PDF", target: "All groups" });
-  const create = () => {
-    if (!form.title.trim()) return;
-    setMaterials([{ id: "m" + Date.now(), ...form, date: "Jun 17" }, ...materials]);
-    setForm({ title: "", type: "PDF", target: "All groups" }); setOpen(false);
-  };
-  return (
-    <>
-      <PageHead title={t.nav.materials}
-        action={<button className="th-btn th-btn--primary" onClick={() => setOpen(true)}><Upload size={16} />{t.uploadMaterial}</button>} />
-      <Card>
-        <div className="th-tablewrap">
-          <table className="th-table">
-            <thead><tr><th>{t.title}</th><th>{t.type}</th><th>{t.assignTo}</th><th>{t.date}</th><th className="th-ta-end">{t.actions}</th></tr></thead>
-            <tbody>
-              {materials.map(m => (
-                <tr key={m.id}>
-                  <td><div className="th-cellname"><span className="th-fileic">{fileIcon(m.type)}</span><strong>{m.title}</strong></div></td>
-                  <td><Badge kind="muted">{m.type}</Badge></td>
-                  <td>{m.target}</td>
-                  <td className="th-muted">{m.date}</td>
-                  <td className="th-ta-end"><div className="th-rowactions"><button className="th-iconbtn"><Download size={15} /></button><button className="th-iconbtn th-iconbtn--danger" onClick={() => setMaterials(materials.filter(x => x.id !== m.id))}><Trash2 size={15} /></button></div></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-      <Modal open={open} onClose={() => setOpen(false)} title={t.uploadMaterial}
-        footer={<><button className="th-btn" onClick={() => setOpen(false)}>{t.cancel}</button>
-          <button className="th-btn th-btn--primary" onClick={create}>{t.create}</button></>}>
-        <div className="th-formgrid">
-          <Field label={t.title}><input className="th-input th-col-2" value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} /></Field>
-          <Field label={t.type}><select className="th-input" value={form.type} onChange={e => setForm({ ...form, type: e.target.value })}>{["PDF", "PPTX", "DOCX", "Video", "Image", "Link"].map(x => <option key={x}>{x}</option>)}</select></Field>
-          <Field label={t.assignTo}><select className="th-input" value={form.target} onChange={e => setForm({ ...form, target: e.target.value })}><option>All groups</option>{groups.map(g => <option key={g.id}>{g.name}</option>)}</select></Field>
-          <div className="th-col-2"><div className="th-dropzone"><Upload size={20} /><span>{t.dragDrop}</span></div></div>
-        </div>
-      </Modal>
-    </>
-  );
-}
-
-function GradesSection({ t, grades, setGrades }) {
-  const [edit, setEdit] = useState(null);
-  return (
-    <>
-      <PageHead title={t.nav.grades} subtitle={t.overview} />
-      <Card>
-        <div className="th-tablewrap">
-          <table className="th-table">
-            <thead><tr><th>{t.student}</th><th>{t.nav.assignments}</th><th>{t.grade}</th><th>{t.feedback}</th><th className="th-ta-end">{t.actions}</th></tr></thead>
-            <tbody>
-              {grades.map(g => (
-                <tr key={g.id}>
-                  <td><div className="th-cellname"><Avatar name={g.student} size={30} /><span>{g.student}</span></div></td>
-                  <td>{g.assignment}</td>
-                  <td><span className="th-gradechip"><strong>{g.grade}</strong><i>{g.letter}</i></span></td>
-                  <td className="th-muted th-clip">{g.feedback}</td>
-                  <td className="th-ta-end"><button className="th-btn th-btn--sm" onClick={() => setEdit(g)}><Pencil size={14} />{t.giveGrade}</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-      <Modal open={!!edit} onClose={() => setEdit(null)} title={t.giveGrade}
-        footer={<><button className="th-btn" onClick={() => setEdit(null)}>{t.cancel}</button>
-          <button className="th-btn th-btn--primary" onClick={() => { setGrades(grades.map(x => x.id === edit.id ? edit : x)); setEdit(null); }}>{t.save}</button></>}>
-        {edit && <div className="th-formgrid">
-          <Field label={t.student}><input className="th-input" value={edit.student} disabled /></Field>
-          <Field label={t.grade}><input className="th-input" type="number" value={edit.grade} onChange={e => setEdit({ ...edit, grade: Number(e.target.value) })} /></Field>
-          <Field label={t.feedback}><textarea className="th-input th-textarea th-col-2" rows={4} value={edit.feedback} onChange={e => setEdit({ ...edit, feedback: e.target.value })} /></Field>
-        </div>}
-      </Modal>
-    </>
-  );
-}
-
-function ChatsSection({ t, chats, setChats, role }) {
-  const [tab, setTab] = useState("personal");
-  const [activeId, setActiveId] = useState(chats[0].id);
-  const [draft, setDraft] = useState("");
-  const list = chats.filter(c => tab === "personal" ? c.role !== "group" : c.role === "group");
-  const active = chats.find(c => c.id === activeId) || list[0];
-  const endRef = useRef(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [active?.msgs.length, activeId]);
-
-  const send = () => {
-    if (!draft.trim()) return;
-    setChats(chats.map(c => c.id === active.id
-      ? { ...c, last: draft, msgs: [...c.msgs, { from: "me", text: draft, time: now() }] } : c));
-    setDraft("");
-  };
-
-  return (
-    <>
-      <PageHead title={t.nav.chats} />
-      <Card className="th-chatlayout">
-        <div className="th-chatlist">
-          <div className="th-segment th-segment--sm">
-            <button className={cx("th-segment__btn", tab === "personal" && "is-active")} onClick={() => { setTab("personal"); }}>{t.personalChat}</button>
-            <button className={cx("th-segment__btn", tab === "group" && "is-active")} onClick={() => { setTab("group"); }}>{t.groupChat}</button>
-          </div>
-          <div className="th-search th-search--flat"><Search size={15} /><input placeholder={t.searchMessages} /></div>
-          <div className="th-threadlist">
-            {list.map(c => (
-              <button key={c.id} className={cx("th-thread", active?.id === c.id && "is-active")} onClick={() => setActiveId(c.id)}>
-                <Avatar name={c.who} size={38} />
-                <div className="th-thread__meta"><strong>{c.who}</strong><span>{c.last}</span></div>
-                {c.unread > 0 && <span className="th-thread__badge">{c.unread}</span>}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="th-chatpane">
-          {active && <>
-            <div className="th-chatpane__head">
-              <Avatar name={active.who} size={40} />
-              <div><strong>{active.who}</strong><span className="th-muted">{active.role === "group" ? t.groupChat : t.student}</span></div>
-            </div>
-            {active.pinned && <div className="th-pinned"><Pin size={14} /> <span>{active.pinned}</span></div>}
-            <div className="th-messages">
-              {active.msgs.map((m, i) => (
-                <div key={i} className={cx("th-msg", m.from === "me" ? "th-msg--me" : "th-msg--them")}>
-                  {active.role === "group" && m.from !== "me" && <span className="th-msg__who">{m.from}</span>}
-                  <div className="th-msg__bubble">{m.text}</div>
-                  <span className="th-msg__time">{m.time}</span>
-                </div>
-              ))}
-              <div ref={endRef} />
-            </div>
-            <div className="th-composer">
-              <button className="th-iconbtn"><Paperclip size={18} /></button>
-              <input className="th-composer__input" value={draft} onChange={e => setDraft(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && send()} placeholder={t.typeMessage} />
-              <button className="th-btn th-btn--primary th-btn--icon" onClick={send}><Send size={16} className="th-rtl-flip" /></button>
-            </div>
-          </>}
-        </div>
-      </Card>
-    </>
-  );
-}
-
-function AnalyticsSection({ t, students }) {
-  const top = [...students].sort((a, b) => b.grade - a.grade).slice(0, 4);
-  const risk = students.filter(s => s.grade < 65);
-  const engagement = [
-    { d: "Mon", v: 72 }, { d: "Tue", v: 81 }, { d: "Wed", v: 76 }, { d: "Thu", v: 88 }, { d: "Fri", v: 92 }, { d: "Sat", v: 60 }, { d: "Sun", v: 48 },
-  ];
-  return (
-    <>
-      <PageHead title={t.nav.analytics} subtitle={t.overview} />
-      <div className="th-chartgrid">
-        <Card className="th-chartcard th-chartcard--wide">
-          <div className="th-chartcard__head"><h3>{t.engagement}</h3><Badge kind="brand">{t.thisWeek}</Badge></div>
-          <ResponsiveContainer width="100%" height={230}>
-            <AreaChart data={engagement} margin={{ left: -18, right: 8, top: 8 }}>
-              <defs><linearGradient id="eng" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--brand)" stopOpacity={0.3} /><stop offset="100%" stopColor="var(--brand)" stopOpacity={0} /></linearGradient></defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
-              <XAxis dataKey="d" stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
-              <YAxis stroke="var(--muted)" tickLine={false} axisLine={false} fontSize={12} />
-              <Tooltip contentStyle={tooltipStyle} />
-              <Area type="monotone" dataKey="v" stroke="var(--brand)" strokeWidth={2.5} fill="url(#eng)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </Card>
-        <Card className="th-chartcard">
-          <div className="th-chartcard__head"><h3>{t.completionRate}</h3></div>
-          <div className="th-donutwrap"><Donut value={78} /><div className="th-donut__center"><strong>78%</strong><span>{t.complete}</span></div></div>
-        </Card>
-        <Card className="th-chartcard">
-          <div className="th-chartcard__head"><h3>{t.topPerformers}</h3></div>
-          <ul className="th-ranklist">
-            {top.map((s, i) => (
-              <li key={s.id}><span className="th-rank">{i + 1}</span><Avatar name={s.name} size={30} /><strong>{s.name}</strong><span className="th-gradechip th-gradechip--sm"><Star size={12} />{s.grade}</span></li>
-            ))}
-          </ul>
-        </Card>
-        <Card className="th-chartcard">
-          <div className="th-chartcard__head"><h3>{t.atRisk}</h3></div>
-          {risk.length === 0 ? <div className="th-empty">—</div> :
-            <ul className="th-ranklist">
-              {risk.map(s => (
-                <li key={s.id}><span className="th-rank th-rank--warn"><AlertTriangle size={13} /></span><Avatar name={s.name} size={30} /><strong>{s.name}</strong><span className="th-gradechip th-gradechip--warn">{s.grade}</span></li>
-              ))}
-            </ul>}
-        </Card>
-      </div>
-    </>
-  );
-}
-
-function SettingsSection({ t, lang, theme, onLang, onTheme }) {
-  const [email, setEmail] = useState(true);
-  const [push, setPush] = useState(true);
-  return (
-    <>
-      <PageHead title={t.nav.settings} />
-      <div className="th-settingsgrid">
-        <Card className="th-setblock">
-          <h3><Globe size={16} /> {t.language}</h3>
-          <div className="th-segment">
-            <button className={cx("th-segment__btn", lang === "en" && "is-active")} onClick={() => lang !== "en" && onLang()}>English</button>
-            <button className={cx("th-segment__btn", lang === "ar" && "is-active")} onClick={() => lang !== "ar" && onLang()}>العربية</button>
-          </div>
-        </Card>
-        <Card className="th-setblock">
-          <h3><Sun size={16} /> {t.appearance}</h3>
-          <div className="th-segment">
-            <button className={cx("th-segment__btn", theme === "light" && "is-active")} onClick={() => theme !== "light" && onTheme()}>{t.light}</button>
-            <button className={cx("th-segment__btn", theme === "dark" && "is-active")} onClick={() => theme !== "dark" && onTheme()}>{t.dark}</button>
-          </div>
-        </Card>
-        <Card className="th-setblock th-col-2">
-          <h3><CircleUserRound size={16} /> {t.profileMgmt}</h3>
-          <div className="th-formgrid">
-            <Field label={t.fullName}><input className="th-input" defaultValue="Dr Amina Said" /></Field>
-            <Field label={t.email}><input className="th-input" defaultValue="amina@techheroes.io" /></Field>
-          </div>
-        </Card>
-        <Card className="th-setblock th-col-2">
-          <h3><Bell size={16} /> {t.notifPrefs}</h3>
-          <Toggle label={t.emailNotif} on={email} onClick={() => setEmail(!email)} />
-          <Toggle label={t.pushNotif} on={push} onClick={() => setPush(!push)} />
-        </Card>
-      </div>
-    </>
-  );
-}
-
-function Toggle({ label, on, onClick }) {
-  return (
-    <button className="th-toggle" onClick={onClick}>
-      <span>{label}</span>
-      <span className={cx("th-switch", on && "is-on")}><i /></span>
-    </button>
-  );
-}
-
-/* ============================== STUDENT views ============================== */
-function StudentHome({ t, materials, assignments, grades, chats, setChats, lang, theme, onLang, onTheme, view }) {
-  if (view === "myGroups") return <StudentGroups t={t} />;
-  if (view === "myMaterials") return <StudentMaterials t={t} materials={materials} />;
-  if (view === "myAssignments") return <StudentAssignments t={t} assignments={assignments} />;
-  if (view === "myGrades") return <StudentGrades t={t} grades={grades} />;
-  if (view === "chat") return <ChatsSection t={t} chats={chats} setChats={setChats} role="student" />;
-  if (view === "profile") return <SettingsSection t={t} lang={lang} theme={theme} onLang={onLang} onTheme={onTheme} />;
-  return null;
-}
-
-function StudentGroups({ t }) {
-  const myGroups = [SEED_GROUPS[0]];
-  return (
-    <>
-      <PageHead title={t.nav.myGroups} subtitle={t.welcome + ", Layla."} />
-      <div className="th-cardgrid">
-        {myGroups.map(g => (
-          <Card key={g.id} className="th-groupcard">
-            <div className="th-groupcard__head"><div><strong>{g.name}</strong><p>{g.desc}</p></div><Badge kind="ok">{t.active}</Badge></div>
-            <div className="th-progress"><div className="th-progress__bar" style={{ width: g.progress + "%" }} /></div>
-            <div className="th-progress__label"><span>{t.progress}</span><strong>{g.progress}%</strong></div>
-            <div className="th-groupcard__meta">
-              <span><Users size={14} />{g.members} {t.members.toLowerCase()}</span>
-              <span><BookOpen size={14} />{g.materials} {t.nav.materials.toLowerCase()}</span>
-            </div>
-          </Card>
-        ))}
-        <Card className="th-promo">
-          <Sparkles size={22} />
-          <strong>{t.recentActivity}</strong>
-          <p>{t.newMaterial}: React Hooks — Deep Dive</p>
-        </Card>
-      </div>
-    </>
-  );
-}
-
-function StudentMaterials({ t, materials }) {
-  const mine = materials.filter(m => m.target === "Frontend Cohort" || m.target === "All groups");
-  return (
-    <>
-      <PageHead title={t.nav.myMaterials} subtitle={`${mine.length} ${t.nav.materials.toLowerCase()}`} />
-      <div className="th-cardgrid th-cardgrid--3">
-        {mine.map(m => (
-          <Card key={m.id} className="th-matcard">
-            <span className="th-fileic th-fileic--lg">{fileIcon(m.type)}</span>
-            <strong>{m.title}</strong>
-            <span className="th-muted">{m.type} · {m.date}</span>
-            <button className="th-btn th-btn--sm th-btn--block"><Download size={14} />{t.download}</button>
-          </Card>
-        ))}
-      </div>
-    </>
-  );
-}
-
-function StudentAssignments({ t, assignments }) {
-  const mine = assignments.filter(a => a.group === "Frontend Cohort");
-  const [submit, setSubmit] = useState(null);
-  const [done, setDone] = useState({});
-  return (
-    <>
-      <PageHead title={t.nav.myAssignments} />
-      <div className="th-cardgrid th-cardgrid--2">
-        {mine.map(a => {
-          const status = done[a.id] ? "submitted" : a.status;
-          return (
-            <Card key={a.id} className="th-asgcard">
-              <div className="th-asgcard__head">
-                <strong>{a.title}</strong>
-                <Badge kind={statusKind(status)}>{t[status]}</Badge>
-              </div>
-              <p className="th-muted">{a.group} · {t.deadline}: {a.deadline}</p>
-              <div className="th-asgcard__foot">
-                {status === "graded" ? <span className="th-gradechip"><strong>92</strong><i>A-</i></span> :
-                  <button className="th-btn th-btn--primary th-btn--sm" onClick={() => setSubmit(a)}><Upload size={14} />{t.submit}</button>}
-              </div>
-            </Card>
-          );
-        })}
-      </div>
-      <Modal open={!!submit} onClose={() => setSubmit(null)} title={`${t.submit} — ${submit?.title || ""}`}
-        footer={<><button className="th-btn" onClick={() => setSubmit(null)}>{t.cancel}</button>
-          <button className="th-btn th-btn--primary" onClick={() => { setDone({ ...done, [submit.id]: true }); setSubmit(null); }}>{t.submit}</button></>}>
-        <div className="th-dropzone"><Upload size={22} /><span>{t.dragDrop}</span></div>
-        <div className="th-filechips">
-          <span className="th-filechip"><FileText size={13} /> report.pdf <X size={12} /></span>
-          <span className="th-filechip"><ImageIcon size={13} /> screenshot.png <X size={12} /></span>
-        </div>
-      </Modal>
-    </>
-  );
-}
-
-function StudentGrades({ t, grades }) {
-  const mine = grades.filter(g => g.student === "Layla Hassan").concat([
-    { id: "gx", student: "Layla Hassan", assignment: "Accessibility Audit", grade: null, letter: "—", feedback: "" },
-  ]);
-  return (
-    <>
-      <PageHead title={t.nav.myGrades} />
-      <div className="th-cardgrid th-cardgrid--2">
-        {mine.map(g => (
-          <Card key={g.id} className="th-gradecard">
-            <div className="th-gradecard__top">
-              <strong>{g.assignment}</strong>
-              {g.grade != null ? <span className="th-gradechip th-gradechip--lg"><strong>{g.grade}</strong><i>{g.letter}</i></span>
-                : <Badge kind="warn">{t.noGradeYet}</Badge>}
-            </div>
-            {g.feedback && <p className="th-feedback"><MessageSquare size={14} /> {g.feedback}</p>}
-          </Card>
-        ))}
-      </div>
-    </>
-  );
-}
-
-
-/* ============================== helpers ============================== */
-const tooltipStyle = { background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)", fontSize: 12, boxShadow: "0 8px 30px rgba(0,0,0,0.12)" };
-function statusKind(s) { return s === "graded" ? "ok" : s === "submitted" ? "brand" : s === "late" ? "warn" : "muted"; }
-function fileIcon(type) {
-  if (type === "Image" || type === "PNG" || type === "JPG") return <ImageIcon size={16} />;
-  if (type === "Video") return <BookOpen size={16} />;
-  return <FileText size={16} />;
-}
-function now() { const d = new Date(); return d.getHours().toString().padStart(2, "0") + ":" + d.getMinutes().toString().padStart(2, "0"); }
-
-/* ============================== Root App ============================== */
-export default function App() {
-  const [lang, setLang] = useState("en");
-  const [theme, setTheme] = useState("light");
-  const [session, setSession] = useState(null); // 'tutor' | 'student' | 'team'
-  const [view, setView] = useState("dashboard");
-
-  const [students, setStudents] = useState(SEED_STUDENTS);
-  const [groups, setGroups] = useState(SEED_GROUPS);
-  const [assignments, setAssignments] = useState(SEED_ASSIGNMENTS);
-  const [materials, setMaterials] = useState(SEED_MATERIALS);
-  const [grades, setGrades] = useState(SEED_GRADES);
-  const [chats, setChats] = useState(initialChats());
-  const [notifs, setNotifs] = useState(SEED_NOTIFS);
-
-  const t = T[lang];
-  const dir = t.dir;
-  const toggleLang = () => setLang(l => l === "en" ? "ar" : "en");
-  const toggleTheme = () => setTheme(th => th === "light" ? "dark" : "light");
-
-  const startSession = (role) => {
-    setSession(role);
-    setView(role === "tutor" ? "dashboard" : "myGroups");
-  };
-  const logout = () => setSession(null);
-
-  const tutorNav = [
-    { key: "dashboard", label: t.nav.dashboard, icon: LayoutDashboard },
-    { key: "students", label: t.nav.students, icon: Users },
-    { key: "groups", label: t.nav.groups, icon: FolderKanban },
-    { key: "assignments", label: t.nav.assignments, icon: ClipboardList },
-    { key: "materials", label: t.nav.materials, icon: BookOpen },
-    { key: "chats", label: t.nav.chats, icon: MessageSquare },
-    { key: "grades", label: t.nav.grades, icon: GraduationCap },
-    { key: "analytics", label: t.nav.analytics, icon: BarChart3 },
-    { key: "settings", label: t.nav.settings, icon: Settings },
-  ];
-  const studentNav = [
-    { key: "myGroups", label: t.nav.myGroups, icon: FolderKanban },
-    { key: "myMaterials", label: t.nav.myMaterials, icon: BookOpen },
-    { key: "myAssignments", label: t.nav.myAssignments, icon: ClipboardList },
-    { key: "myGrades", label: t.nav.myGrades, icon: GraduationCap },
-    { key: "chat", label: t.nav.chat, icon: MessageSquare },
-    { key: "profile", label: t.nav.profile, icon: Settings },
-  ];
-
-  const themeVars = theme === "light" ? LIGHT : DARK;
-
-  return (
-    <div className="th-root" dir={dir} data-theme={theme} style={{ ...themeVars, fontFamily: lang === "ar" ? "var(--font-ar)" : "var(--font-ui)" }}>
-      <style>{CSS}</style>
-      {!session ? (
-        <Login t={t} lang={lang} theme={theme} onLang={toggleLang} onTheme={toggleTheme} onLogin={startSession} />
-      ) : (
-        <Shell t={t} lang={lang} theme={theme} role={session}
-          nav={session === "tutor" ? tutorNav : studentNav}
-          view={view} setView={setView} onLang={toggleLang} onTheme={toggleTheme} onLogout={logout}
-          notifs={notifs} setNotifs={setNotifs}>
-          {session === "tutor" && <>
-            {view === "dashboard" && <TutorDashboard t={t} lang={lang} students={students} groups={groups} assignments={assignments} />}
-            {view === "students" && <StudentsSection t={t} students={students} setStudents={setStudents} groups={groups} />}
-            {view === "groups" && <GroupsSection t={t} groups={groups} setGroups={setGroups} />}
-            {view === "assignments" && <AssignmentsSection t={t} assignments={assignments} setAssignments={setAssignments} groups={groups} />}
-            {view === "materials" && <MaterialsSection t={t} materials={materials} setMaterials={setMaterials} groups={groups} />}
-            {view === "chats" && <ChatsSection t={t} chats={chats} setChats={setChats} role="tutor" />}
-            {view === "grades" && <GradesSection t={t} grades={grades} setGrades={setGrades} />}
-            {view === "analytics" && <AnalyticsSection t={t} students={students} />}
-            {view === "settings" && <SettingsSection t={t} lang={lang} theme={theme} onLang={toggleLang} onTheme={toggleTheme} />}
-          </>}
-          {session === "student" &&
-            <StudentHome t={t} materials={materials} assignments={assignments} grades={grades} chats={chats} setChats={setChats}
-              lang={lang} theme={theme} onLang={toggleLang} onTheme={toggleTheme} view={view} />}
-        </Shell>
-      )}
-    </div>
-  );
-}
-
-/* ============================== Theme tokens ============================== */
 const LIGHT = {
   "--bg": "#F8F6F2", "--surface": "#FFFFFF", "--surface-2": "#FBFAF7",
   "--ink": "#121212", "--ink-soft": "#454545", "--muted": "#8A857C",
@@ -1518,4 +1711,23 @@ h1,h2,h3{ margin:0; font-family:var(--font-display); letter-spacing:-0.02em; }
 .th-filechips{ display:flex; gap:8px; flex-wrap:wrap; margin-top:14px; }
 .th-filechip{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:99px; background:var(--surface-2); border:1px solid var(--line); font-size:12px; color:var(--ink-soft); }
 .th-filechip svg:last-child{ cursor:pointer; color:var(--muted); }
+
+/* ---------- production additions ---------- */
+.th-spin{ animation:th-rot 1s linear infinite; }
+@keyframes th-rot{ to{ transform:rotate(360deg); } }
+.th-loading{ display:flex; align-items:center; justify-content:center; gap:10px; padding:48px; color:var(--muted); font-size:14px; }
+.th-bootscreen{ min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; }
+.th-emptybox{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:46px 24px; text-align:center; }
+.th-emptybox__ic{ display:flex; align-items:center; justify-content:center; width:52px; height:52px; border-radius:15px; background:var(--surface-2); color:var(--muted); margin-bottom:4px; }
+.th-emptybox strong{ font-size:15px; }
+.th-emptybox span{ font-size:13px; color:var(--muted); max-width:44ch; }
+.th-errnote{ display:flex; align-items:center; gap:7px; margin-top:12px; padding:10px 12px; border-radius:var(--r-sm); background:var(--warn-soft); color:var(--warn); font-size:13px; }
+.th-okenote{ display:flex; align-items:center; gap:7px; margin-top:12px; padding:10px 12px; border-radius:var(--r-sm); background:var(--ok-soft); color:var(--ok); font-size:13px; }
+.th-fineprint{ font-size:12px; color:var(--muted); margin:12px 0 0; line-height:1.5; }
+.th-chatempty{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:var(--muted); font-size:14px; padding:40px; text-align:center; }
+.th-setactions{ margin-top:16px; display:flex; justify-content:flex-end; }
+.th-memberchips{ display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
+.th-memberchip{ display:inline-flex; align-items:center; gap:5px; padding:5px 10px; border-radius:999px; border:1px solid var(--line); background:var(--surface-2); color:var(--ink-soft); font-size:12px; font-weight:500; transition:.15s; }
+.th-memberchip:hover{ border-color:var(--brand); color:var(--brand); }
+.th-memberchip.is-in{ background:var(--brand-soft); color:var(--brand); border-color:transparent; }
 `;
