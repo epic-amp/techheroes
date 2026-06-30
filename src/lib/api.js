@@ -8,6 +8,8 @@
  *   const { user } = await api.login.tutor("tutor@techheroes.io", "demo1234");
  *   const { students } = await api.students.list();
  */
+import { upload } from "@vercel/blob/client";
+
 const BASE = import.meta.env.VITE_API_BASE || "/api";
 const TOKEN_KEY = "th_token";
 
@@ -56,6 +58,19 @@ export const api = {
   },
   me: () => request("/auth/me"),
   updateProfile: (b) => request("/auth/me", { method: "PUT", body: b }),
+
+  // Upload a real file straight to Vercel Blob (browser -> Blob), returns its URL.
+  // The Date.now() prefix guarantees a unique pathname, so re-uploading a file
+  // with the same name never throws "This blob already exists". The server route
+  // (lib/routes/upload.js) also sets addRandomSuffix: true as a second safeguard.
+  uploadFile: async (file) => {
+    const blob = await upload(`${Date.now()}-${file.name}`, file, {
+      access: "public",
+      handleUploadUrl: `${BASE}/upload`,
+      clientPayload: JSON.stringify({ token: getToken() }),
+    });
+    return blob.url;
+  },
 
   students: {
     list: (params = {}) => request(`/students${qs(params)}`),
