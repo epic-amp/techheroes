@@ -5,13 +5,13 @@ import {
   Sun, Moon, Globe, LogOut, Send, Paperclip, Download, Upload, CheckCircle2,
   Clock, AlertTriangle, FileText, Image as ImageIcon, ChevronRight, Menu, Award,
   TrendingUp, Pin, CircleUserRound, Star, Calendar, Filter, ShieldCheck, Sparkles,
-  ArrowUpRight, Loader2, LogIn, UserPlus, Inbox, Link2, Eye
+  ArrowUpRight, Loader2, LogIn, UserPlus, Inbox, Link2
 } from "lucide-react";
 import {
   BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, RadialBarChart, RadialBar
 } from "recharts";
-import { api } from "./lib/api";
+import { api, MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_TYPES } from "./lib/api";
 
 /* ============================== atoms ============================== */
 const cx = (...a) => a.filter(Boolean).join(" ");
@@ -38,88 +38,6 @@ function Modal({ open, onClose, title, children, footer }) {
 }
 function Field({ label, children }) {
   return <label className="th-field"><span className="th-field__label">{label}</span>{children}</label>;
-}
-
-/* ---- File upload + inline preview ---------------------------------------- */
-// Detect how a file should be previewed, purely from its URL/name extension.
-function fileKind(url = "") {
-  const u = String(url).split("?")[0].toLowerCase();
-  if (/\.(png|jpe?g|gif|webp|svg|bmp|avif|heic)$/.test(u)) return "image";
-  if (/\.(mp4|webm|ogg|mov|m4v|mkv)$/.test(u)) return "video";
-  if (/\.(mp3|wav|m4a|aac|flac)$/.test(u)) return "audio";
-  if (/\.pdf$/.test(u)) return "pdf";
-  return "other";
-}
-// Friendly material "type" label inferred from the chosen file.
-function typeFromFile(file) {
-  const ext = (file?.name || "").split(".").pop().toLowerCase();
-  if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "avif", "heic"].includes(ext)) return "Image";
-  if (["mp4", "webm", "ogg", "mov", "m4v", "mkv"].includes(ext)) return "Video";
-  if (ext === "pdf") return "PDF";
-  if (["ppt", "pptx"].includes(ext)) return "PPTX";
-  if (["doc", "docx"].includes(ext)) return "DOCX";
-  if (["xls", "xlsx", "csv"].includes(ext)) return "XLSX";
-  return "File";
-}
-
-// A labeled file picker that uploads straight to Vercel Blob and returns the URL.
-function FileField({ label, value, onChange, t }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [name, setName] = useState("");
-  const inputRef = useRef(null);
-  const pick = async (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    setBusy(true); setErr("");
-    try {
-      const url = await api.uploadFile(file);
-      setName(file.name);
-      onChange(url, file);
-    } catch (e2) {
-      setErr(e2.message || "Upload failed");
-    } finally {
-      setBusy(false);
-      if (inputRef.current) inputRef.current.value = "";
-    }
-  };
-  return (
-    <label className="th-field th-col-2">
-      <span className="th-field__label">{label}</span>
-      <input ref={inputRef} type="file" className="th-input th-file" onChange={pick} disabled={busy} />
-      {busy && <span className="th-uploadnote"><Loader2 className="th-spin" size={13} /> {t.uploading}</span>}
-      {!busy && value && <span className="th-uploadnote th-uploadnote--ok"><CheckCircle2 size={13} /> {name || t.fileReady}</span>}
-      {err && <span className="th-uploadnote th-uploadnote--err"><AlertTriangle size={13} /> {err}</span>}
-    </label>
-  );
-}
-
-// Renders a file inline: image, video, audio and PDF preview natively;
-// anything else falls back to a button that opens the file in a new tab.
-function FilePreview({ url }) {
-  const kind = fileKind(url);
-  if (kind === "image") return <img className="th-preview__media" src={url} alt="" />;
-  if (kind === "video") return <video className="th-preview__media" src={url} controls />;
-  if (kind === "audio") return <audio className="th-preview__audio" src={url} controls />;
-  if (kind === "pdf") return <iframe className="th-preview__frame" src={url} title="preview" />;
-  return (
-    <a className="th-btn" href={url} target="_blank" rel="noreferrer">
-      <ArrowUpRight size={15} /> {String(url).split("/").pop()}
-    </a>
-  );
-}
-
-// Modal wrapper that shows a file inline without forcing a download.
-function FileViewer({ open, url, title, onClose, t }) {
-  return (
-    <Modal open={open} onClose={onClose} title={title || t.view}
-      footer={<>
-        <a className="th-btn" href={url} target="_blank" rel="noreferrer"><ArrowUpRight size={15} />{t.openNewTab}</a>
-        <button className="th-btn th-btn--primary" onClick={onClose}>{t.close}</button>
-      </>}>
-      <div className="th-preview">{url ? <FilePreview url={url} /> : null}</div>
-    </Modal>
-  );
 }
 function Donut({ value }) {
   const data = [{ name: "v", value, fill: "var(--brand)" }];
@@ -171,6 +89,89 @@ function ErrorNote({ children }) {
   return children ? <div className="th-errnote"><AlertTriangle size={14} /> {children}</div> : null;
 }
 
+// File picker + drag&drop that uploads straight to Blob storage (see src/lib/api.js).
+// Accepts documents, images, and video up to MAX_UPLOAD_BYTES (200MB). Reports the
+// resulting URL (and original filename) up via onChange(url, fileName).
+function FileUploadField({ t, label, value, fileName, onChange, disabled }) {
+  const inputRef = useRef(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [busyName, setBusyName] = useState("");
+  const [error, setError] = useState("");
+
+  const openPicker = () => !disabled && inputRef.current?.click();
+
+  const handleFiles = async (fileList) => {
+    const file = fileList?.[0];
+    if (!file) return;
+    setError("");
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError(t.fileTooLarge);
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
+    if (ALLOWED_UPLOAD_TYPES.length && file.type && !ALLOWED_UPLOAD_TYPES.includes(file.type)) {
+      setError(t.fileTypeNotAllowed);
+      if (inputRef.current) inputRef.current.value = "";
+      return;
+    }
+    setUploading(true); setProgress(0); setBusyName(file.name);
+    try {
+      const url = await api.uploadFile(file, (p) => setProgress(Math.round(p?.percentage || 0)));
+      onChange(url, file.name, file.type);
+    } catch (e) {
+      setError(e.message || t.uploadFailed);
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const clear = () => { onChange("", "", ""); setError(""); };
+
+  return (
+    <div className="th-uploadfield">
+      {label && <span className="th-field__label">{label}</span>}
+      <input
+        ref={inputRef}
+        type="file"
+        className="th-hidden-input"
+        accept={ALLOWED_UPLOAD_TYPES.join(",")}
+        onChange={(e) => handleFiles(e.target.files)}
+        disabled={disabled || uploading}
+      />
+      {uploading ? (
+        <div className="th-uploadprogress">
+          <Loader2 className="th-spin" size={16} />
+          <span className="th-uploadprogress__name">{busyName}</span>
+          <div className="th-progressbar"><div className="th-progressbar__fill" style={{ width: `${progress}%` }} /></div>
+          <span>{progress}%</span>
+        </div>
+      ) : value ? (
+        <div className="th-uploadedfile">
+          <Paperclip size={15} />
+          <a href={value} target="_blank" rel="noreferrer" className="th-uploadedfile__name">{fileName || value}</a>
+          <button type="button" className="th-iconbtn" onClick={clear} aria-label={t.removeFile}><X size={14} /></button>
+        </div>
+      ) : (
+        <div
+          className={cx("th-dropzone", dragOver && "is-dragover")}
+          onClick={openPicker}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }}
+        >
+          <Upload size={18} />
+          <span>{t.uploadFiles}</span>
+          <small>{t.dragDrop}</small>
+        </div>
+      )}
+      <ErrorNote>{error}</ErrorNote>
+    </div>
+  );
+}
+
 /* ============================== helpers ============================== */
 const tooltipStyle = { background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, color: "var(--ink)", fontSize: 12, boxShadow: "0 8px 30px rgba(0,0,0,0.12)" };
 function statusKind(s) { return s === "graded" ? "ok" : s === "submitted" ? "brand" : s === "late" ? "warn" : "muted"; }
@@ -178,6 +179,18 @@ function fileIcon(type) {
   if (["Image", "PNG", "JPG"].includes(type)) return <ImageIcon size={16} />;
   if (type === "Video") return <BookOpen size={16} />;
   return <FileText size={16} />;
+}
+// Suggest a material "type" tag from an uploaded file's MIME type, so picking a
+// video doesn't leave the dropdown stuck on "PDF".
+function guessTypeFromMime(mime) {
+  if (!mime) return null;
+  if (mime.startsWith("video/")) return "Video";
+  if (mime.startsWith("image/")) return "Image";
+  if (mime === "application/pdf") return "PDF";
+  if (mime.includes("wordprocessingml")) return "DOCX";
+  if (mime.includes("presentationml")) return "PPTX";
+  if (mime.includes("spreadsheetml")) return "XLSX";
+  return null;
 }
 function fmtTime(iso) {
   if (!iso) return "";
@@ -681,17 +694,16 @@ function AssignmentsSection({ t, assignments, groups, reload }) {
 /* ============================== Tutor: Materials ============================== */
 function MaterialsSection({ t, materials, groups, reload }) {
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", type: "PDF", groupId: "", fileUrl: "" });
+  const [form, setForm] = useState({ title: "", type: "PDF", groupId: "", fileUrl: "", fileName: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [view, setView] = useState(null);
 
   const create = async () => {
     if (!form.title.trim()) return;
     setBusy(true); setErr("");
     try {
       await api.materials.create({ title: form.title, type: form.type, groupId: form.groupId || null, fileUrl: form.fileUrl || null });
-      setForm({ title: "", type: "PDF", groupId: "", fileUrl: "" }); setOpen(false); await reload();
+      setForm({ title: "", type: "PDF", groupId: "", fileUrl: "", fileName: "" }); setOpen(false); await reload();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
   const del = async (id) => { try { await api.materials.remove(id); await reload(); } catch (e) { window.alert(e.message); } };
@@ -712,8 +724,7 @@ function MaterialsSection({ t, materials, groups, reload }) {
                     <td><Badge kind="muted">{m.type}</Badge></td>
                     <td>{m.group_id ? groupName(groups, m.group_id) : t.allGroups}</td>
                     <td className="th-ta-end"><div className="th-rowactions">
-                      {m.file_url && <button className="th-iconbtn" onClick={() => setView({ url: m.file_url, title: m.title })} title={t.view}><Eye size={15} /></button>}
-                      {m.file_url && <a className="th-iconbtn" href={m.file_url} target="_blank" rel="noreferrer" title={t.openNewTab}><Download size={15} /></a>}
+                      {m.file_url && <a className="th-iconbtn" href={m.file_url} target="_blank" rel="noreferrer"><Download size={15} /></a>}
                       <button className="th-iconbtn th-iconbtn--danger" onClick={() => del(m.id)}><Trash2 size={15} /></button>
                     </div></td>
                   </tr>
@@ -730,7 +741,7 @@ function MaterialsSection({ t, materials, groups, reload }) {
           <Field label={t.title}><input className="th-input th-col-2" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} /></Field>
           <Field label={t.type}>
             <select className="th-input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-              {["PDF", "PPTX", "DOCX", "XLSX", "Video", "Image", "File"].map((x) => <option key={x}>{x}</option>)}
+              {["PDF", "PPTX", "DOCX", "XLSX", "Video", "Image", "Link"].map((x) => <option key={x}>{x}</option>)}
             </select>
           </Field>
           <Field label={t.assignTo}>
@@ -739,12 +750,24 @@ function MaterialsSection({ t, materials, groups, reload }) {
               {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
             </select>
           </Field>
-          <FileField label={t.file} value={form.fileUrl} t={t}
-            onChange={(url, file) => setForm({ ...form, fileUrl: url, type: typeFromFile(file) })} />
+          <div className="th-col-2">
+            <FileUploadField
+              t={t}
+              label={t.attachFile}
+              value={form.fileUrl}
+              fileName={form.fileName}
+              onChange={(url, fileName, mime) =>
+                setForm((f) => ({ ...f, fileUrl: url, fileName, type: guessTypeFromMime(mime) || f.type }))
+              }
+            />
+            <Field label={t.orPasteLink}>
+              <input className="th-input" value={form.fileUrl} onChange={(e) => setForm({ ...form, fileUrl: e.target.value, fileName: "" })} placeholder="https://…" />
+            </Field>
+          </div>
         </div>
+        <p className="th-fineprint">{t.blobNote}</p>
         <ErrorNote>{err}</ErrorNote>
       </Modal>
-      <FileViewer open={!!view} url={view?.url} title={view?.title} onClose={() => setView(null)} t={t} />
     </>
   );
 }
@@ -779,7 +802,7 @@ function GradesSection({ t, submissions, assignments, reload }) {
                     <td>{aTitle(s.assignment_id)}</td>
                     <td><Badge kind={statusKind(s.grade != null ? "graded" : s.status)}>{s.grade != null ? t.graded : t[s.status]}</Badge></td>
                     <td>{s.grade != null ? <span className="th-gradechip"><strong>{Number(s.grade)}</strong>{s.letter && <i>{s.letter}</i>}</span> : <span className="th-muted">—</span>}</td>
-                    <td className="th-ta-end"><button className="th-btn th-btn--sm" onClick={() => setEdit({ id: s.id, grade: s.grade ?? "", letter: s.letter || "", feedback: s.feedback || "", student: s.student_name, file: s.file_url })}>
+                    <td className="th-ta-end"><button className="th-btn th-btn--sm" onClick={() => setEdit({ id: s.id, grade: s.grade ?? "", letter: s.letter || "", feedback: s.feedback || "", student: s.student_name })}>
                       <Pencil size={14} />{s.grade != null ? t.regrade : t.giveGrade}</button></td>
                   </tr>
                 ))}
@@ -796,7 +819,6 @@ function GradesSection({ t, submissions, assignments, reload }) {
           <Field label={t.grade}><input className="th-input" type="number" value={edit.grade} onChange={(e) => setEdit({ ...edit, grade: e.target.value })} /></Field>
           <Field label={t.letter}><input className="th-input" value={edit.letter} onChange={(e) => setEdit({ ...edit, letter: e.target.value })} placeholder="A / B+ …" /></Field>
           <Field label={t.feedback}><textarea className="th-input th-textarea th-col-2" rows={4} value={edit.feedback} onChange={(e) => setEdit({ ...edit, feedback: e.target.value })} /></Field>
-          {edit.file && <div className="th-field th-col-2"><span className="th-field__label">{t.submittedFile}</span><div className="th-preview th-preview--sm"><FilePreview url={edit.file} /></div></div>}
         </div>}
         <ErrorNote>{err}</ErrorNote>
       </Modal>
@@ -1053,7 +1075,6 @@ function StudentGroups({ t, groups, loading }) {
   );
 }
 function StudentMaterials({ t, materials, groups, loading }) {
-  const [view, setView] = useState(null);
   if (loading) return (<><PageHead title={t.nav.myMaterials} /><Spinner /></>);
   return (
     <>
@@ -1066,19 +1087,18 @@ function StudentMaterials({ t, materials, groups, loading }) {
               <strong>{m.title}</strong>
               <span className="th-muted">{m.type} · {m.group_id ? groupName(groups, m.group_id) : t.allGroups}</span>
               {m.file_url
-                ? <button className="th-btn th-btn--sm th-btn--block" onClick={() => setView({ url: m.file_url, title: m.title })}><Eye size={14} />{t.view}</button>
+                ? <a className="th-btn th-btn--sm th-btn--block" href={m.file_url} target="_blank" rel="noreferrer"><Download size={14} />{t.open}</a>
                 : <span className="th-fineprint">{t.noFile}</span>}
             </Card>
           ))}
         </div>
       )}
-      <FileViewer open={!!view} url={view?.url} title={view?.title} onClose={() => setView(null)} t={t} />
     </>
   );
 }
 function StudentAssignments({ t, assignments, loading, reload }) {
   const [submit, setSubmit] = useState(null);
-  const [form, setForm] = useState({ comment: "", fileUrl: "" });
+  const [form, setForm] = useState({ comment: "", fileUrl: "", fileName: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   if (loading) return (<><PageHead title={t.nav.myAssignments} /><Spinner /></>);
@@ -1087,7 +1107,7 @@ function StudentAssignments({ t, assignments, loading, reload }) {
     setBusy(true); setErr("");
     try {
       await api.submissions.create({ assignmentId: submit.id, comment: form.comment, fileUrl: form.fileUrl || null });
-      setSubmit(null); setForm({ comment: "", fileUrl: "" }); await reload();
+      setSubmit(null); setForm({ comment: "", fileUrl: "", fileName: "" }); await reload();
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   };
 
@@ -1112,8 +1132,16 @@ function StudentAssignments({ t, assignments, loading, reload }) {
       <Modal open={!!submit} onClose={() => setSubmit(null)} title={`${t.submit} — ${submit?.title || ""}`}
         footer={<><button className="th-btn" onClick={() => setSubmit(null)}>{t.cancel}</button>
           <button className="th-btn th-btn--primary" onClick={doSubmit} disabled={busy}>{busy ? <Loader2 className="th-spin" size={16} /> : t.submit}</button></>}>
-        <FileField label={t.file} value={form.fileUrl} t={t} onChange={(url) => setForm({ ...form, fileUrl: url })} />
+        <FileUploadField
+          t={t}
+          label={t.attachFile}
+          value={form.fileUrl}
+          fileName={form.fileName}
+          onChange={(url, fileName) => setForm({ ...form, fileUrl: url, fileName })}
+        />
+        <Field label={t.orPasteLink}><input className="th-input" value={form.fileUrl} onChange={(e) => setForm({ ...form, fileUrl: e.target.value, fileName: "" })} placeholder="https://… (link to your work)" /></Field>
         <Field label={t.comment}><textarea className="th-input th-textarea" rows={3} value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} /></Field>
+        <p className="th-fineprint">{t.blobNote}</p>
         <ErrorNote>{err}</ErrorNote>
       </Modal>
     </>
@@ -1291,7 +1319,9 @@ const T = {
     noGroups: "No groups yet", noGroupsHint: "Create a group, then add students to it.", addMember: "Add to group", removeMember: "Remove from group",
     noAssignments: "No assignments yet", noAssignmentsHint: "Create your first assignment.",
     addMaterial: "Add material", noMaterials: "No materials yet", noMaterialsHint: "Share your first learning material.",
-    file: "File", view: "View", uploading: "Uploading…", fileReady: "File uploaded", openNewTab: "Open in new tab", close: "Close", submittedFile: "Submitted file",
+    fileLink: "File link (optional)", blobNote: "Files upload directly to secure storage — documents, images, and video up to 200MB.",
+    attachFile: "Attach file", orPasteLink: "Or paste a link instead", removeFile: "Remove file",
+    fileTooLarge: "That file is over the 200MB limit.", fileTypeNotAllowed: "That file type isn't supported.", uploadFailed: "Upload failed. Please try again.",
     gradeSub: "Review submissions and publish grades.", noSubmissions: "No submissions yet", noSubmissionsHint: "Submissions appear here once students hand in work.",
     regrade: "Update grade", letter: "Letter", noChats: "No conversations yet.", pickChat: "Select a conversation to start messaging.",
     noMessages: "No messages yet. Say hello.", submissions7d: "Submissions (last 7 days)", analyticsHint: "Insights appear as students submit work.",
@@ -1337,7 +1367,7 @@ const T = {
     notifPrefs: "Notification preferences", emailNotif: "Email notifications",
     pushNotif: "Push notifications", profileMgmt: "Profile", fullName: "Full name",
     submit: "Submit work", submitted2: "Submitted", uploadFiles: "Upload files",
-    dragDrop: "Drag files here or browse — PDF, DOCX, PPTX, XLSX, ZIP, JPG, PNG",
+    dragDrop: "Drag a file here or browse — PDF, DOCX, PPTX, XLSX, ZIP, JPG, PNG, or video up to 200MB",
     yourGrade: "Your grade", noGradeYet: "Awaiting grade", openChat: "Open chat",
     notifTitle: "Notifications", markAllRead: "Mark all read", viewAll: "View all",
     newAssignment: "New assignment", newMaterial: "New material", newMessage: "New message",
@@ -1363,7 +1393,9 @@ const T = {
     noGroups: "لا توجد مجموعات بعد", noGroupsHint: "أنشئ مجموعة ثم أضف الطلاب إليها.", addMember: "إضافة إلى المجموعة", removeMember: "إزالة من المجموعة",
     noAssignments: "لا توجد واجبات بعد", noAssignmentsHint: "أنشئ أول واجب.",
     addMaterial: "إضافة مادة", noMaterials: "لا توجد مواد بعد", noMaterialsHint: "شارك أول مادة تعليمية.",
-    file: "ملف", view: "عرض", uploading: "جارٍ الرفع…", fileReady: "تم رفع الملف", openNewTab: "فتح في تبويب جديد", close: "إغلاق", submittedFile: "الملف المُسلَّم",
+    fileLink: "رابط الملف (اختياري)", blobNote: "تُرفع الملفات مباشرةً إلى تخزين آمن — مستندات وصور وفيديو حتى 200 ميغابايت.",
+    attachFile: "إرفاق ملف", orPasteLink: "أو ألصق رابطًا بدلاً من ذلك", removeFile: "إزالة الملف",
+    fileTooLarge: "حجم الملف يتجاوز الحد المسموح به وهو 200 ميغابايت.", fileTypeNotAllowed: "نوع هذا الملف غير مدعوم.", uploadFailed: "فشل الرفع. حاول مرة أخرى.",
     gradeSub: "راجع التسليمات وانشر الدرجات.", noSubmissions: "لا توجد تسليمات بعد", noSubmissionsHint: "تظهر التسليمات هنا بعد أن يسلّم الطلاب أعمالهم.",
     regrade: "تحديث الدرجة", letter: "تقدير حرفي", noChats: "لا توجد محادثات بعد.", pickChat: "اختر محادثة لبدء المراسلة.",
     noMessages: "لا توجد رسائل بعد. ابدأ بالتحية.", submissions7d: "التسليمات (آخر ٧ أيام)", analyticsHint: "تظهر التحليلات عند تسليم الطلاب أعمالهم.",
@@ -1409,7 +1441,7 @@ const T = {
     notifPrefs: "تفضيلات الإشعارات", emailNotif: "إشعارات البريد",
     pushNotif: "الإشعارات الفورية", profileMgmt: "الملف الشخصي", fullName: "الاسم الكامل",
     submit: "تسليم العمل", submitted2: "تم التسليم", uploadFiles: "رفع الملفات",
-    dragDrop: "اسحب الملفات هنا أو تصفّح — PDF, DOCX, PPTX, XLSX, ZIP, JPG, PNG",
+    dragDrop: "اسحب ملفًا هنا أو تصفّح — PDF, DOCX, PPTX, XLSX, ZIP, JPG, PNG، أو فيديو حتى 200 ميغابايت",
     yourGrade: "درجتك", noGradeYet: "بانتظار التقييم", openChat: "فتح المحادثة",
     notifTitle: "الإشعارات", markAllRead: "تعليم الكل كمقروء", viewAll: "عرض الكل",
     newAssignment: "واجب جديد", newMaterial: "مادة جديدة", newMessage: "رسالة جديدة",
@@ -1817,17 +1849,4 @@ h1,h2,h3{ margin:0; font-family:var(--font-display); letter-spacing:-0.02em; }
 .th-memberchip{ display:inline-flex; align-items:center; gap:5px; padding:5px 10px; border-radius:999px; border:1px solid var(--line); background:var(--surface-2); color:var(--ink-soft); font-size:12px; font-weight:500; transition:.15s; }
 .th-memberchip:hover{ border-color:var(--brand); color:var(--brand); }
 .th-memberchip.is-in{ background:var(--brand-soft); color:var(--brand); border-color:transparent; }
-.th-file{ padding:9px 11px; cursor:pointer; }
-.th-file::file-selector-button{ margin-inline-end:10px; padding:7px 12px; border:1px solid var(--line); border-radius:var(--r-sm); background:var(--surface-2); color:var(--ink-soft); font:inherit; font-size:12.5px; font-weight:600; cursor:pointer; }
-.th-file::file-selector-button:hover{ border-color:var(--brand); color:var(--brand); }
-.th-uploadnote{ display:inline-flex; align-items:center; gap:6px; margin-top:7px; font-size:12px; color:var(--muted); }
-.th-uploadnote--ok{ color:var(--ok); }
-.th-uploadnote--err{ color:var(--warn); }
-.th-preview{ display:flex; align-items:center; justify-content:center; width:100%; min-height:120px; background:var(--surface-2); border:1px solid var(--line); border-radius:var(--r-sm); overflow:hidden; }
-.th-preview--sm{ min-height:80px; }
-.th-preview__media{ max-width:100%; max-height:70vh; display:block; border-radius:var(--r-sm); }
-.th-preview--sm .th-preview__media{ max-height:38vh; }
-.th-preview__frame{ width:100%; height:70vh; border:0; background:#fff; }
-.th-preview--sm .th-preview__frame{ height:42vh; }
-.th-preview__audio{ width:100%; }
 `;
