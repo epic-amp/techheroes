@@ -11,7 +11,7 @@ import {
   BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, RadialBarChart, RadialBar
 } from "recharts";
-import { api, MAX_UPLOAD_BYTES, ALLOWED_UPLOAD_TYPES } from "./lib/api";
+import { api, MAX_UPLOAD_BYTES, UPLOAD_ACCEPT, isAllowedUploadFile } from "./lib/api";
 
 /* ============================== atoms ============================== */
 const cx = (...a) => a.filter(Boolean).join(" ");
@@ -111,7 +111,7 @@ function FileUploadField({ t, label, value, fileName, onChange, disabled }) {
       if (inputRef.current) inputRef.current.value = "";
       return;
     }
-    if (ALLOWED_UPLOAD_TYPES.length && file.type && !ALLOWED_UPLOAD_TYPES.includes(file.type)) {
+    if (!isAllowedUploadFile(file)) {
       setError(t.fileTypeNotAllowed);
       if (inputRef.current) inputRef.current.value = "";
       return;
@@ -137,7 +137,7 @@ function FileUploadField({ t, label, value, fileName, onChange, disabled }) {
         ref={inputRef}
         type="file"
         className="th-hidden-input"
-        accept={ALLOWED_UPLOAD_TYPES.join(",")}
+        accept={UPLOAD_ACCEPT}
         onChange={(e) => handleFiles(e.target.files)}
         disabled={disabled || uploading}
       />
