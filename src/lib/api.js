@@ -25,6 +25,33 @@ export const ALLOWED_UPLOAD_TYPES = [
   "video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", // mp4, webm, mov, avi
 ];
 
+// Extensions matching ALLOWED_UPLOAD_TYPES above, used as a fallback because
+// (a) native file-picker dialogs on Windows/macOS often only grey files in/out
+// by extension, not MIME type, so an accept list of MIME types alone can hide
+// valid videos, and (b) some browsers report an empty or nonstandard file.type
+// for certain video containers (.mov in particular), which would otherwise
+// fail a MIME-only check even though the file is fine.
+export const ALLOWED_UPLOAD_EXTENSIONS = [
+  ".pdf", ".docx", ".pptx", ".xlsx", ".zip",
+  ".jpg", ".jpeg", ".png",
+  ".mp4", ".webm", ".mov", ".avi",
+];
+
+// Pass this to <input accept=...> — combining MIME types and extensions gives
+// the OS file dialog the best chance of showing every allowed file (browsers
+// use whichever signal they support; some only honor one or the other).
+export const UPLOAD_ACCEPT = [...ALLOWED_UPLOAD_TYPES, ...ALLOWED_UPLOAD_EXTENSIONS].join(",");
+
+// True if `file` looks like an allowed type, checking MIME type first and
+// falling back to its extension when the browser didn't report a MIME type
+// we recognize (common for .mov/.avi). The server re-validates the real
+// content type regardless, so this is just a fast client-side sanity check.
+export function isAllowedUploadFile(file) {
+  if (file.type && ALLOWED_UPLOAD_TYPES.includes(file.type)) return true;
+  const name = (file.name || "").toLowerCase();
+  return ALLOWED_UPLOAD_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
 const getToken = () => localStorage.getItem(TOKEN_KEY);
 const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
 
