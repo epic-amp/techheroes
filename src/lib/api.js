@@ -13,6 +13,18 @@ import { upload } from "@vercel/blob/client";
 const BASE = import.meta.env.VITE_API_BASE || "/api";
 const TOKEN_KEY = "th_token";
 
+// Keep these in sync with ALLOWED / MAX_UPLOAD_BYTES in lib/routes/upload.js.
+export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB
+export const ALLOWED_UPLOAD_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // docx
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation", // pptx
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // xlsx
+  "application/zip", "application/x-zip-compressed",
+  "image/jpeg", "image/png",
+  "video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", // mp4, webm, mov, avi
+];
+
 const getToken = () => localStorage.getItem(TOKEN_KEY);
 const setToken = (t) => (t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY));
 
@@ -63,11 +75,15 @@ export const api = {
   // The Date.now() prefix guarantees a unique pathname, so re-uploading a file
   // with the same name never throws "This blob already exists". The server route
   // (lib/routes/upload.js) also sets addRandomSuffix: true as a second safeguard.
-  uploadFile: async (file) => {
+  // Files (including video, up to MAX_UPLOAD_BYTES) go directly to Blob storage,
+  // bypassing this server, so large uploads never hit a function body-size limit.
+  // Pass onProgress({ percentage }) to drive a progress bar in the UI.
+  uploadFile: async (file, onProgress) => {
     const blob = await upload(`${Date.now()}-${file.name}`, file, {
       access: "public",
       handleUploadUrl: `${BASE}/upload`,
       clientPayload: JSON.stringify({ token: getToken() }),
+      onUploadProgress: onProgress,
     });
     return blob.url;
   },
