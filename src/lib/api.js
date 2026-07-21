@@ -37,10 +37,24 @@ export const ALLOWED_UPLOAD_EXTENSIONS = [
   ".mp4", ".webm", ".mov", ".avi",
 ];
 
-// Pass this to <input accept=...> — combining MIME types and extensions gives
-// the OS file dialog the best chance of showing every allowed file (browsers
-// use whichever signal they support; some only honor one or the other).
-export const UPLOAD_ACCEPT = [...ALLOWED_UPLOAD_TYPES, ...ALLOWED_UPLOAD_EXTENSIONS].join(",");
+// Pass this to <input accept=...>. Listing exact subtypes like "video/mp4" is
+// NOT reliable on its own: macOS's native Open panel (used by both Safari and
+// Chrome) matches files by UTI, and phone-exported videos (e.g. WhatsApp's
+// .mp4 export) don't always resolve to the exact subtype we listed, so they
+// show up greyed out even though the extension is right there in the accept
+// list. The "video/*" / "image/*" wildcards are what the OS reliably expands
+// to "any video/image file" regardless of the specific codec or container, so
+// we lead with those and keep the precise types/extensions as a supplement
+// for the document types that don't have a safe wildcard category.
+export const UPLOAD_ACCEPT = [
+  "video/*", "image/*",
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/zip", "application/x-zip-compressed",
+  ...ALLOWED_UPLOAD_EXTENSIONS,
+].join(",");
 
 // True if `file` looks like an allowed type, checking MIME type first and
 // falling back to its extension when the browser didn't report a MIME type
