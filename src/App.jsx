@@ -5,7 +5,7 @@ import {
   Sun, Moon, Globe, LogOut, Send, Paperclip, Download, Upload, CheckCircle2,
   Clock, AlertTriangle, FileText, Image as ImageIcon, ChevronRight, Menu, Award,
   TrendingUp, Pin, CircleUserRound, Star, Calendar, Filter, ShieldCheck, Sparkles,
-  ArrowUpRight, Loader2, LogIn, UserPlus, Inbox, Link2
+  ArrowUpRight, Loader2, LogIn, UserPlus, Inbox, Link2, Eye, ExternalLink
 } from "lucide-react";
 import {
   BarChart, Bar, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -169,6 +169,61 @@ function FileUploadField({ t, label, value, fileName, onChange, disabled }) {
       )}
       <ErrorNote>{error}</ErrorNote>
     </div>
+  );
+}
+
+// Decide how to render a file inline. Checks the stored MIME/type hint first,
+// then falls back to sniffing the URL's extension (materials created via the
+// old "paste a link" flow only ever have a URL, no MIME type).
+function guessPreviewKind(url, typeHint) {
+  const hint = (typeHint || "").toLowerCase();
+  const clean = (url || "").split("?")[0].split("#")[0].toLowerCase();
+  const ext = clean.slice(clean.lastIndexOf(".") + 1);
+  if (hint.startsWith("image/") || hint === "image" || ["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(ext)) return "image";
+  if (hint.startsWith("video/") || hint === "video" || ["mp4", "webm", "mov", "avi", "m4v"].includes(ext)) return "video";
+  if (hint === "application/pdf" || hint === "pdf" || ext === "pdf") return "pdf";
+  if (hint.includes("officedocument") || hint === "msword" || ["docx", "doc", "pptx", "ppt", "xlsx", "xls"].includes(ext)) return "office";
+  return "other";
+}
+
+// Inline viewer for any material/submission file: images and video render
+// directly, PDFs and Office docs render in an iframe (Office files go through
+// Microsoft's public viewer, which needs a publicly reachable URL — Blob
+// storage uploads are public, so this works for anything uploaded through the
+// app). Anything else falls back to just offering the file to open/download.
+// Downloading always stays available via the footer regardless of whether a
+// preview could be rendered.
+function FilePreviewModal({ t, file, onClose }) {
+  if (!file) return null;
+  const kind = guessPreviewKind(file.url, file.type);
+  const name = file.name || file.url.split("/").pop().split("?")[0];
+  const downloadUrl = `${file.url}${file.url.includes("?") ? "&" : "?"}download=1`;
+
+  return (
+    <Modal open={!!file} onClose={onClose} title={name}
+      footer={<>
+        <a className="th-btn" href={file.url} target="_blank" rel="noreferrer"><ExternalLink size={15} />{t.openInNewTab}</a>
+        <a className="th-btn th-btn--primary" href={downloadUrl}><Download size={15} />{t.downloadFile}</a>
+      </>}>
+      <div className="th-filepreview">
+        {kind === "image" && <img src={file.url} alt={name} className="th-filepreview__img" />}
+        {kind === "video" && <video src={file.url} controls className="th-filepreview__video" />}
+        {kind === "pdf" && <iframe src={file.url} title={name} className="th-filepreview__frame" />}
+        {kind === "office" && (
+          <iframe
+            src={`https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(file.url)}`}
+            title={name}
+            className="th-filepreview__frame"
+          />
+        )}
+        {kind === "other" && (
+          <div className="th-filepreview__fallback">
+            <FileText size={32} />
+            <p>{t.cantPreview}</p>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -697,6 +752,7 @@ function MaterialsSection({ t, materials, groups, reload }) {
   const [form, setForm] = useState({ title: "", type: "PDF", groupId: "", fileUrl: "", fileName: "" });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [preview, setPreview] = useState(null);
 
   const create = async () => {
     if (!form.title.trim()) return;
@@ -724,7 +780,7 @@ function MaterialsSection({ t, materials, groups, reload }) {
                     <td><Badge kind="muted">{m.type}</Badge></td>
                     <td>{m.group_id ? groupName(groups, m.group_id) : t.allGroups}</td>
                     <td className="th-ta-end"><div className="th-rowactions">
-                      {m.file_url && <a className="th-iconbtn" href={m.file_url} target="_blank" rel="noreferrer"><Download size={15} /></a>}
+                      {m.file_url && <button className="th-iconbtn" onClick={() => setPreview({ url: m.file_url, name: m.title, type: m.type })} aria-label={t.preview}><Eye size={15} /></button>}
                       <button className="th-iconbtn th-iconbtn--danger" onClick={() => del(m.id)}><Trash2 size={15} /></button>
                     </div></td>
                   </tr>
@@ -768,6 +824,7 @@ function MaterialsSection({ t, materials, groups, reload }) {
         <p className="th-fineprint">{t.blobNote}</p>
         <ErrorNote>{err}</ErrorNote>
       </Modal>
+      <FilePreviewModal t={t} file={preview} onClose={() => setPreview(null)} />
     </>
   );
 }
@@ -777,6 +834,7 @@ function GradesSection({ t, submissions, assignments, reload }) {
   const [edit, setEdit] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [preview, setPreview] = useState(null);
   const aTitle = (id) => assignments.find((a) => a.id === id)?.title || "—";
 
   const save = async () => {
@@ -802,8 +860,11 @@ function GradesSection({ t, submissions, assignments, reload }) {
                     <td>{aTitle(s.assignment_id)}</td>
                     <td><Badge kind={statusKind(s.grade != null ? "graded" : s.status)}>{s.grade != null ? t.graded : t[s.status]}</Badge></td>
                     <td>{s.grade != null ? <span className="th-gradechip"><strong>{Number(s.grade)}</strong>{s.letter && <i>{s.letter}</i>}</span> : <span className="th-muted">—</span>}</td>
-                    <td className="th-ta-end"><button className="th-btn th-btn--sm" onClick={() => setEdit({ id: s.id, grade: s.grade ?? "", letter: s.letter || "", feedback: s.feedback || "", student: s.student_name })}>
-                      <Pencil size={14} />{s.grade != null ? t.regrade : t.giveGrade}</button></td>
+                    <td className="th-ta-end"><div className="th-rowactions">
+                      {s.file_url && <button className="th-iconbtn" onClick={() => setPreview({ url: s.file_url, name: `${s.student_name} — ${aTitle(s.assignment_id)}` })} aria-label={t.preview}><Eye size={15} /></button>}
+                      <button className="th-btn th-btn--sm" onClick={() => setEdit({ id: s.id, grade: s.grade ?? "", letter: s.letter || "", feedback: s.feedback || "", student: s.student_name })}>
+                        <Pencil size={14} />{s.grade != null ? t.regrade : t.giveGrade}</button>
+                    </div></td>
                   </tr>
                 ))}
               </tbody>
@@ -822,6 +883,7 @@ function GradesSection({ t, submissions, assignments, reload }) {
         </div>}
         <ErrorNote>{err}</ErrorNote>
       </Modal>
+      <FilePreviewModal t={t} file={preview} onClose={() => setPreview(null)} />
     </>
   );
 }
@@ -1075,6 +1137,7 @@ function StudentGroups({ t, groups, loading }) {
   );
 }
 function StudentMaterials({ t, materials, groups, loading }) {
+  const [preview, setPreview] = useState(null);
   if (loading) return (<><PageHead title={t.nav.myMaterials} /><Spinner /></>);
   return (
     <>
@@ -1087,12 +1150,13 @@ function StudentMaterials({ t, materials, groups, loading }) {
               <strong>{m.title}</strong>
               <span className="th-muted">{m.type} · {m.group_id ? groupName(groups, m.group_id) : t.allGroups}</span>
               {m.file_url
-                ? <a className="th-btn th-btn--sm th-btn--block" href={m.file_url} target="_blank" rel="noreferrer"><Download size={14} />{t.open}</a>
+                ? <button className="th-btn th-btn--sm th-btn--block" onClick={() => setPreview({ url: m.file_url, name: m.title, type: m.type })}><Eye size={14} />{t.preview}</button>
                 : <span className="th-fineprint">{t.noFile}</span>}
             </Card>
           ))}
         </div>
       )}
+      <FilePreviewModal t={t} file={preview} onClose={() => setPreview(null)} />
     </>
   );
 }
@@ -1322,6 +1386,7 @@ const T = {
     fileLink: "File link (optional)", blobNote: "Files upload directly to secure storage — documents, images, and video up to 200MB.",
     attachFile: "Attach file", orPasteLink: "Or paste a link instead", removeFile: "Remove file",
     fileTooLarge: "That file is over the 200MB limit.", fileTypeNotAllowed: "That file type isn't supported.", uploadFailed: "Upload failed. Please try again.",
+    preview: "View", openInNewTab: "Open in new tab", downloadFile: "Download", cantPreview: "This file type can't be previewed here — use Download or Open in new tab.",
     gradeSub: "Review submissions and publish grades.", noSubmissions: "No submissions yet", noSubmissionsHint: "Submissions appear here once students hand in work.",
     regrade: "Update grade", letter: "Letter", noChats: "No conversations yet.", pickChat: "Select a conversation to start messaging.",
     noMessages: "No messages yet. Say hello.", submissions7d: "Submissions (last 7 days)", analyticsHint: "Insights appear as students submit work.",
@@ -1396,6 +1461,7 @@ const T = {
     fileLink: "رابط الملف (اختياري)", blobNote: "تُرفع الملفات مباشرةً إلى تخزين آمن — مستندات وصور وفيديو حتى 200 ميغابايت.",
     attachFile: "إرفاق ملف", orPasteLink: "أو ألصق رابطًا بدلاً من ذلك", removeFile: "إزالة الملف",
     fileTooLarge: "حجم الملف يتجاوز الحد المسموح به وهو 200 ميغابايت.", fileTypeNotAllowed: "نوع هذا الملف غير مدعوم.", uploadFailed: "فشل الرفع. حاول مرة أخرى.",
+    preview: "عرض", openInNewTab: "فتح في تبويب جديد", downloadFile: "تنزيل", cantPreview: "لا يمكن معاينة هذا النوع من الملفات هنا — استخدم التنزيل أو الفتح في تبويب جديد.",
     gradeSub: "راجع التسليمات وانشر الدرجات.", noSubmissions: "لا توجد تسليمات بعد", noSubmissionsHint: "تظهر التسليمات هنا بعد أن يسلّم الطلاب أعمالهم.",
     regrade: "تحديث الدرجة", letter: "تقدير حرفي", noChats: "لا توجد محادثات بعد.", pickChat: "اختر محادثة لبدء المراسلة.",
     noMessages: "لا توجد رسائل بعد. ابدأ بالتحية.", submissions7d: "التسليمات (آخر ٧ أيام)", analyticsHint: "تظهر التحليلات عند تسليم الطلاب أعمالهم.",
